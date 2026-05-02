@@ -18,21 +18,43 @@ const __dirname = path.dirname(__filename);
 
 // ─── Gemini istemcisi ────────────────────────────────────────
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
-const GEMINI_MODEL = 'gemini-2.5-flash';
 
-async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
+// Hız ve kalite dengesine göre öncelik sırasına dizilmiş güncel modeller (Mayıs 2026 itibarıyla)
+const FALLBACK_MODELS = [
+  'gemini-3-flash',     // 1. Tercih: En güncel, hızlı ve optimize model
+  'gemini-2.5-flash',   // 2. Tercih: Güvenilir, hızlı bir önceki nesil
+  'gemini-3.1-pro'      // 3. Tercih: En gelişmiş, karmaşık muhakeme yeteneği yüksek model (yedek)
+];
+
+async function executeWithFallback<T>(fn: (modelName: string) => Promise<T>): Promise<T> {
+  let lastError = null;
+
+  for (let i = 0; i < FALLBACK_MODELS.length; i++) {
+    const currentModelName = FALLBACK_MODELS[i];
+    
     try {
-      return await fn();
+      if (i > 0) console.log(`[AI Motoru] Fallback Deneniyor: ${currentModelName}`);
+      return await fn(currentModelName);
     } catch (err: any) {
-      if (err?.status === 429 && attempt < maxRetries - 1) {
-        const wait = (attempt + 1) * 15000;
-        console.warn(`[Gemini] 429 Rate limit — ${wait / 1000}s bekleniyor...`);
-        await new Promise(r => setTimeout(r, wait));
-      } else throw err;
+      lastError = err;
+      
+      // 429 (Too Many Requests / Quota) veya 503 (Service Unavailable) durumunda
+      if (err?.status === 429 || err?.status === 503 || err?.message?.includes("429") || err?.message?.includes("quota")) {
+        console.warn(`[UYARI] ${currentModelName} limiti doldu veya yoğun (${err?.status || '429'}). Bir sonraki modele geçiliyor...`);
+        
+        if (i === FALLBACK_MODELS.length - 1) {
+          console.error("[CRITICAL] Tüm AI modellerinin limiti tükendi!");
+          break;
+        }
+        continue;
+      } else {
+        // 400 Bad Request vb. mantıksal bir hataysa direkt fırlat
+        throw err;
+      }
     }
   }
-  throw new Error('Max retries exceeded');
+
+  throw new Error("Yapay zeka asistanı şu an çok yoğun. Lütfen 1-2 dakika sonra tekrar dene.");
 }
 
 // ─── Cloudinary Config ───────────────────────────────────────
@@ -89,8 +111,8 @@ const OutfitModel = mongoose.models.Outfit || mongoose.model('Outfit', OutfitSch
 // ─── Gemini Vision: Görsel Analizi ────────────────────────────────────────
 async function analyzeImageData(base64: string, mimeType: string) {
   try {
-    const response = await withRetry(() => ai.models.generateContent({
-      model: GEMINI_MODEL,
+    const response = await executeWithFallback((modelName) => ai.models.generateContent({
+      model: modelName,
       contents: [
         {
           parts: [
@@ -303,8 +325,8 @@ ${request.requiredItems?.length ? `6. ZORUNLU: Şu ID'li parçaları KESİNLİKL
 
     const userPrompt = `KONUM: ${request.location}\nETKİNLİK: ${request.event}\nEFOR/HAREKET SEVİYESİ: ${request.effort}/10\nRUH HALİ: ${request.mood || 'Belirtilmedi'}\nHAVA DURUMU DURUMU: ${request.ignoreWeather ? 'Önemsiz (Kapalı mekan)' : liveWeatherStr}\n${request.requiredItems?.length ? `ZORUNLU PARÇALAR: ${request.requiredItems.join(', ')}\n` : ''}GARDIROP LİSTESİ (JSON):\n${JSON.stringify(items, null, 2)}`;
 
-    const response = await withRetry(() => ai.models.generateContent({
-      model: GEMINI_MODEL,
+    const response = await executeWithFallback((modelName) => ai.models.generateContent({
+      model: modelName,
       contents: userPrompt,
       config: {
         systemInstruction,
