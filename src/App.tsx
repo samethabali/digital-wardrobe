@@ -152,7 +152,7 @@ export default function App() {
         <button onClick={() => setMobileMenuOpen(true)} className="p-2 -ml-2 text-gray-600 hover:text-gray-900 transition-colors">
           <Menu className="w-6 h-6" />
         </button>
-        <div className="font-bold text-gray-900 tracking-wider">ANTIGRAVITY</div>
+        <div className="font-bold text-gray-900 tracking-wider">AURA</div>
         <button onClick={() => setMobilePlannerOpen(true)} className="p-2 -mr-2 text-indigo-600 bg-indigo-50 rounded-lg hover:bg-indigo-100 transition-colors">
           <Zap className="w-5 h-5 fill-current" />
         </button>
@@ -162,8 +162,8 @@ export default function App() {
       <aside className={`fixed md:relative inset-y-0 left-0 z-40 w-72 md:w-64 border-r border-gray-200 bg-white flex flex-col p-6 shrink-0 h-full transform transition-transform duration-300 ease-in-out ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
         <div className="flex justify-between items-center mb-10">
           <div>
-            <h1 className="text-xs font-bold tracking-[0.2em] uppercase text-gray-400 mb-1">Antigravity</h1>
-            <p className="text-lg font-semibold text-gray-900">Digital Wardrobe</p>
+            <h1 className="text-xs font-bold tracking-[0.2em] uppercase text-gray-400 mb-1">Aura</h1>
+            <p className="text-lg font-semibold text-gray-900">Akıllı Gardırop</p>
           </div>
           <button onClick={() => setMobileMenuOpen(false)} className="md:hidden p-2 text-gray-400 hover:text-gray-900 bg-gray-50 rounded-xl">
             <X className="w-5 h-5" />
