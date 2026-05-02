@@ -21,9 +21,10 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
 // Hız ve kalite dengesine göre öncelik sırasına dizilmiş güncel modeller
 const FALLBACK_MODELS = [
-  'gemini-2.0-flash',          // 1. Tercih: En güncel ve hızlı model (2.0)
-  'gemini-1.5-flash-latest',   // 2. Tercih: 1.5 sürümünün en günceli
-  'gemini-1.5-pro-latest'      // 3. Tercih: Daha detaylı analizler için pro sürümü
+  'gemini-flash-latest',       // 1. Tercih: Terminal testinde 200 OK (Çalışan) model
+  'gemini-2.5-flash',          // 2. Tercih: Alternatif yeni sürüm
+  'gemini-2.0-flash',          // 3. Tercih: Limit bekleyen sürüm
+  'gemini-3-flash-preview'
 ];
 
 async function executeWithFallback<T>(fn: (modelName: string) => Promise<T>): Promise<T> {
