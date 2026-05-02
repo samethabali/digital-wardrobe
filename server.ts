@@ -208,9 +208,13 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
 
 app.use(cors({
   origin: function(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
+    // Vercel üzerinden oluşturulan dinamik linklere (.vercel.app) izin ver
+    const isVercel = origin && origin.endsWith('.vercel.app');
+    
+    if (!origin || allowedOrigins.includes(origin) || isVercel) {
       callback(null, true);
     } else {
+      console.error(`[CORS] Engellenen origin: ${origin}`);
       callback(new Error('CORS kısıtlaması nedeniyle engellendi.'));
     }
   }
