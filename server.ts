@@ -19,11 +19,11 @@ const __dirname = path.dirname(__filename);
 // ─── Gemini istemcisi ────────────────────────────────────────
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
-// Hız ve kalite dengesine göre öncelik sırasına dizilmiş güncel modeller (Mayıs 2026 itibarıyla)
+// Hız ve kalite dengesine göre öncelik sırasına dizilmiş güncel modeller
 const FALLBACK_MODELS = [
-  'gemini-3-flash',     // 1. Tercih: En güncel, hızlı ve optimize model
-  'gemini-2.5-flash',   // 2. Tercih: Güvenilir, hızlı bir önceki nesil
-  'gemini-3.1-pro'      // 3. Tercih: En gelişmiş, karmaşık muhakeme yeteneği yüksek model (yedek)
+  'gemini-2.5-flash',   // 1. Tercih: Güncel ve test edilmiş hızlı model
+  'gemini-1.5-flash',   // 2. Tercih: Güvenilir, hızlı bir önceki nesil
+  'gemini-1.5-pro'      // 3. Tercih: Daha detaylı analizler için yedek model
 ];
 
 async function executeWithFallback<T>(fn: (modelName: string) => Promise<T>): Promise<T> {
@@ -38,23 +38,26 @@ async function executeWithFallback<T>(fn: (modelName: string) => Promise<T>): Pr
     } catch (err: any) {
       lastError = err;
       
-      // 429 (Too Many Requests / Quota) veya 503 (Service Unavailable) durumunda
-      if (err?.status === 429 || err?.status === 503 || err?.message?.includes("429") || err?.message?.includes("quota")) {
-        console.warn(`[UYARI] ${currentModelName} limiti doldu veya yoğun (${err?.status || '429'}). Bir sonraki modele geçiliyor...`);
+      // 429 (Kota), 503 (Sunucu Yoğunluğu), veya 404/400 (Model Bulunamadı/Desteklenmiyor)
+      const isRateLimit = err?.status === 429 || err?.status === 503 || err?.message?.includes("429") || err?.message?.includes("quota");
+      const isNotFound = err?.status === 404 || err?.status === 400 || err?.message?.includes("not found") || err?.message?.includes("not supported");
+
+      if (isRateLimit || isNotFound) {
+        console.warn(`[UYARI] ${currentModelName} atlanıyor (Hata: ${err?.status || 'Bilinmiyor'} - ${isNotFound ? 'Model bulunamadı' : 'Limit/Yoğunluk'}). Bir sonraki modele geçiliyor...`);
         
         if (i === FALLBACK_MODELS.length - 1) {
-          console.error("[CRITICAL] Tüm AI modellerinin limiti tükendi!");
+          console.error("[CRITICAL] Tüm AI modelleri denendi ancak hiçbiri yanıt veremedi!");
           break;
         }
         continue;
       } else {
-        // 400 Bad Request vb. mantıksal bir hataysa direkt fırlat
+        // Beklenmeyen mantıksal bir hataysa direkt fırlat
         throw err;
       }
     }
   }
 
-  throw new Error("Yapay zeka asistanı şu an çok yoğun. Lütfen 1-2 dakika sonra tekrar dene.");
+  throw new Error("Yapay zeka asistanı şu an yanıt veremiyor (Modeller ulaşılamaz veya çok yoğun). Lütfen daha sonra tekrar dene.");
 }
 
 // ─── Cloudinary Config ───────────────────────────────────────
