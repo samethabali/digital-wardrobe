@@ -21,9 +21,9 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
 // Hız ve kalite dengesine göre öncelik sırasına dizilmiş güncel modeller
 const FALLBACK_MODELS = [
-  'gemini-2.5-flash',   // 1. Tercih: Güncel ve test edilmiş hızlı model
-  'gemini-1.5-flash',   // 2. Tercih: Güvenilir, hızlı bir önceki nesil
-  'gemini-1.5-pro'      // 3. Tercih: Daha detaylı analizler için yedek model
+  'gemini-2.0-flash',          // 1. Tercih: En güncel ve hızlı model (2.0)
+  'gemini-1.5-flash-latest',   // 2. Tercih: 1.5 sürümünün en günceli
+  'gemini-1.5-pro-latest'      // 3. Tercih: Daha detaylı analizler için pro sürümü
 ];
 
 async function executeWithFallback<T>(fn: (modelName: string) => Promise<T>): Promise<T> {
@@ -410,7 +410,8 @@ app.delete('/api/wardrobe/:id', async (req, res) => {
 
 app.put('/api/wardrobe/:id', async (req, res) => {
   try {
-    const updated = await ItemModel.findOneAndUpdate({ id: req.params.id }, req.body, { new: true });
+    // TS hatasını önlemek için query kısmına "as any" ekledik
+    const updated = await ItemModel.findOneAndUpdate({ id: req.params.id } as any, req.body, { new: true });
     if (!updated) return res.status(404).json({ error: 'Bulunamadı' });
     res.json({ success: true, item: updated });
   } catch {
