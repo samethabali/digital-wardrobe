@@ -329,9 +329,10 @@ KURALLAR:
  ${request.ignoreWeather ? '- Hava durumu önemsiz (Kapalı mekan vs.).' : '- Hava durumu CANLI VERİ olarak iletilmiştir, KESİNLİKLE dikkate al.'}
 4. stylingReason'ı Türkçe, akıcı ve detaylı yaz.
 5. MUTLAKA JSON formatında yanıt ver.
-${request.requiredItems?.length ? `6. ZORUNLU: Şu ID'li parçaları KESİNLİKLE kombine dahil etmelisin: ${request.requiredItems.join(', ')}` : ''}`;
+${request.requiredItems?.length ? `6. ZORUNLU: Şu ID'li parçaları KESİNLİKLE kombine dahil etmelisin: ${request.requiredItems.join(', ')}` : ''}
+${request.excludedItems?.length ? `7. YASAKLI: Şu ID'li parçaları KESİNLİKLE KULLANMA (seçme): ${request.excludedItems.join(', ')}` : ''}`;
 
-    const userPrompt = `KONUM: ${request.location}\nETKİNLİK: ${request.event}\nEFOR/HAREKET SEVİYESİ: ${request.effort}/10\nRUH HALİ: ${request.mood || 'Belirtilmedi'}\nHAVA DURUMU DURUMU: ${request.ignoreWeather ? 'Önemsiz (Kapalı mekan)' : liveWeatherStr}\n${request.requiredItems?.length ? `ZORUNLU PARÇALAR: ${request.requiredItems.join(', ')}\n` : ''}GARDIROP LİSTESİ (JSON):\n${JSON.stringify(items, null, 2)}`;
+    const userPrompt = `KONUM: ${request.location}\nETKİNLİK: ${request.event}\nEFOR/HAREKET SEVİYESİ: ${request.effort}/10\nRUH HALİ: ${request.mood || 'Belirtilmedi'}\nHAVA DURUMU DURUMU: ${request.ignoreWeather ? 'Önemsiz (Kapalı mekan)' : liveWeatherStr}\n${request.requiredItems?.length ? `ZORUNLU PARÇALAR: ${request.requiredItems.join(', ')}\n` : ''}${request.excludedItems?.length ? `YASAKLI PARÇALAR: ${request.excludedItems.join(', ')}\n` : ''}GARDIROP LİSTESİ (JSON):\n${JSON.stringify(items, null, 2)}`;
 
     const response = await executeWithFallback((modelName) => ai.models.generateContent({
       model: modelName,
