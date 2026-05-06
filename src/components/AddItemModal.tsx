@@ -6,13 +6,14 @@ import { analyzeImageFile } from '../services/stylistService';
 interface Props {
   onClose: () => void;
   onAdded: () => void;
+  onNotify: (msg: string, type: 'success' | 'error' | 'info') => void;
 }
 
 const CATEGORIES = ['top', 'bottom', 'shoes', 'makeup', 'accessory'] as const;
 const STYLES     = ['casual', 'formal', 'sport', 'elegant', 'bohemian'] as const;
 const WEATHERS   = ['sunny', 'cloudy', 'rainy', 'snowy', 'hot', 'cold'] as const;
 
-export default function AddItemModal({ onClose, onAdded }: Props) {
+export default function AddItemModal({ onClose, onAdded, onNotify }: Props) {
   const [file, setFile]           = React.useState<File | null>(null);
   const [preview, setPreview]     = React.useState<string>('');
   const [analyzing, setAnalyzing] = React.useState(false);
@@ -62,7 +63,7 @@ export default function AddItemModal({ onClose, onAdded }: Props) {
         }));
         setAnalyzed(true);
       } else {
-        alert('Analiz başarısız. Lütfen bilgileri manuel girin.');
+        onNotify('Analiz başarısız. Lütfen bilgileri manuel girin.', 'error');
       }
     } finally {
       setAnalyzing(false);
@@ -93,8 +94,9 @@ export default function AddItemModal({ onClose, onAdded }: Props) {
         throw new Error(err.error || 'Yükleme başarısız');
       }
       onAdded();
+      onNotify('Kıyafet başarıyla eklendi!', 'success');
     } catch (err: any) {
-      alert(err.message || 'Kaydetme başarısız.');
+      onNotify(err.message || 'Kaydetme başarısız.', 'error');
     } finally {
       setSaving(false);
     }

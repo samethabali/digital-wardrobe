@@ -36,6 +36,7 @@ export interface StylistRequest {
   effort?: number; // 1-10
   mood?: string;
   requiredItems?: string[]; // Must include item IDs
+  excludedItems?: string[]; // Must NOT include item IDs
   ignoreWeather?: boolean;  // If true, don't consider weather match
   additionalFilters?: Record<string, any>;
 }

@@ -7,13 +7,14 @@ interface Props {
   item: WardrobeItem;
   onClose: () => void;
   onUpdate: (updatedItem: WardrobeItem) => void;
+  onNotify: (msg: string, type: 'success' | 'error' | 'info') => void;
 }
 
 const CATEGORIES = ['top', 'bottom', 'shoes', 'makeup', 'accessory'] as const;
 const STYLES     = ['casual', 'formal', 'sport', 'elegant', 'bohemian'] as const;
 const WEATHERS   = ['sunny', 'cloudy', 'rainy', 'snowy', 'hot', 'cold'] as const;
 
-export default function ItemDetailModal({ item, onClose, onUpdate }: Props) {
+export default function ItemDetailModal({ item, onClose, onUpdate, onNotify }: Props) {
   const [isEditing, setIsEditing] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [form, setForm] = React.useState<WardrobeItem>({ ...item });
@@ -39,8 +40,9 @@ export default function ItemDetailModal({ item, onClose, onUpdate }: Props) {
       const data = await res.json();
       onUpdate(data.item);
       setIsEditing(false);
+      onNotify('Kıyafet güncellendi.', 'success');
     } catch (err: any) {
-      alert(err.message);
+      onNotify(err.message, 'error');
     } finally {
       setSaving(false);
     }

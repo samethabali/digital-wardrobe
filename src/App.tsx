@@ -4,9 +4,11 @@ import WardrobeGrid from './components/WardrobeGrid';
 import OutfitPlanner from './components/OutfitPlanner';
 import AddItemModal from './components/AddItemModal';
 import ItemDetailModal from './components/ItemDetailModal';
+import NotificationCenter, { Notification } from './components/NotificationCenter';
+import PromptModal from './components/PromptModal';
 import { WardrobeItem, StylistRequest, SavedOutfit } from './types';
 import { generateOutfit } from './services/stylistService';
-import { Sparkles, Plus, RefreshCw, Wand2, CheckCircle2, Save, Trash2, Menu, X, Zap } from 'lucide-react';
+import { Sparkles, Plus, RefreshCw, Wand2, CheckCircle2, Save, Trash2, Menu, X, Zap, AlertCircle } from 'lucide-react';
 
 export default function App() {
   const [items, setItems] = React.useState<WardrobeItem[]>([]);
@@ -33,6 +35,28 @@ export default function App() {
     stylingReason: string;
     compatibilityScore: number;
   } | null>(null);
+  const [lastRequest, setLastRequest] = React.useState<StylistRequest | null>(null);
+  const [isSelectionMode, setIsSelectionMode] = React.useState(false);
+  const [selectedForOutfit, setSelectedForOutfit] = React.useState<string[]>([]);
+  const [notifications, setNotifications] = React.useState<Notification[]>([]);
+  const [promptConfig, setPromptConfig] = React.useState<{
+    isOpen: boolean;
+    title: string;
+    defaultValue: string;
+    resolve: (val: string | null) => void;
+  }>({ isOpen: false, title: '', defaultValue: '', resolve: () => {} });
+
+  const notify = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    const id = Math.random().toString(36).slice(2, 9);
+    setNotifications(prev => [...prev, { id, message, type }]);
+    setTimeout(() => setNotifications(prev => prev.filter(n => n.id !== id)), 5000);
+  };
+
+  const ask = (title: string, defaultValue: string = ''): Promise<string | null> => {
+    return new Promise((resolve) => {
+      setPromptConfig({ isOpen: true, title, defaultValue, resolve });
+    });
+  };
 
   const fetchWardrobe = async () => {
     try {
@@ -72,9 +96,9 @@ export default function App() {
       const res = await fetch('/api/wardrobe/scan', { method: 'POST' });
       const data = await res.json();
       if (data.added > 0) await fetchWardrobe();
-      alert(data.message || 'Tarama tamamlandı.');
+      notify(data.message || 'Tarama tamamlandı.', 'success');
     } catch {
-      alert('Tarama başarısız.');
+      notify('Tarama başarısız.', 'error');
     } finally {
       setIsScanning(false);
     }
@@ -106,7 +130,7 @@ export default function App() {
         });
         return pump();
       })
-      .catch(() => setEnrichState(p => ({ ...p, running: false, message: 'Hata oluştu.' })));
+      .catch(() => notify('Analiz sırasında bir hata oluştu.', 'error'));
   };
 
   const handleItemAdded = async () => {
@@ -119,12 +143,14 @@ export default function App() {
     try {
       await fetch(`/api/wardrobe/${id}`, { method: 'DELETE' });
       setItems(prev => prev.filter(i => i.id !== id));
+      notify('Kıyafet silindi.', 'info');
     } catch {
-      alert('Silme başarısız.');
+      notify('Silme başarısız.', 'error');
     }
   };
 
   const handleGenerate = async (request: StylistRequest) => {
+    setLastRequest(request);
     setIsGenerating(true);
     setResult(null);
     try {
@@ -133,17 +159,73 @@ export default function App() {
       document.getElementById('result-section')?.scrollIntoView({ behavior: 'smooth' });
     } catch (error: any) {
       const msg = error.message?.includes('429') || error.message?.includes('kota')
-        ? '⚠️ Gemini API kota sınırına ulaşıldı. Birkaç dakika bekleyip tekrar deneyin.'
+        ? 'Gemini API kota sınırına ulaşıldı. Lütfen bekleyin.'
         : `Kombin oluşturulamadı: ${error.message}`;
-      alert(msg);
+      notify(msg, 'error');
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const handleToggleSelectionMode = () => {
+    setIsSelectionMode(!isSelectionMode);
+    setSelectedForOutfit([]);
+    if (!isSelectionMode) setActiveTab('koleksiyon');
+  };
+
+  const handleItemSelect = (id: string) => {
+    setSelectedForOutfit(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  };
+
+  const handleSaveManualOutfit = async () => {
+    if (selectedForOutfit.length === 0) return;
+    const name = await ask('Manuel Kombin İsmi', 'Benim Kombinim');
+    if (!name) return;
+    try {
+      const res = await fetch('/api/outfits', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          items: selectedForOutfit,
+          stylingReason: 'Kullanıcı tarafından manuel oluşturuldu.',
+          compatibilityScore: 100
+        })
+      });
+      if (res.ok) {
+        notify('Kombin başarıyla kaydedildi!', 'success');
+        setIsSelectionMode(false);
+        setSelectedForOutfit([]);
+        fetchOutfits();
+        setActiveTab('kombinlerim');
+      } else throw new Error();
+    } catch {
+      notify('Kombin kaydedilemedi.', 'error');
     }
   };
 
   const selectedItemsDetails = result
     ? items.filter(item => result.selectedItems.includes(item.id))
     : [];
+
+  const handleReplaceItem = (itemId: string) => {
+    if (!lastRequest || !result) return;
+    
+    // Değişmesini istemediğimiz (kalan) parçaları requiredItems'a ekle
+    const itemsToKeep = result.selectedItems.filter(id => id !== itemId);
+    const newRequired = Array.from(new Set([...(lastRequest.requiredItems || []), ...itemsToKeep]));
+    
+    // Değişmesini istediğimiz parçayı excludedItems'a ekle
+    const newRequest = { 
+       ...lastRequest, 
+       excludedItems: [...(lastRequest.excludedItems || []), itemId],
+       requiredItems: newRequired
+    };
+    
+    handleGenerate(newRequest);
+  };
 
   return (
     <div className="flex flex-col md:flex-row w-full h-screen bg-[#F9FAFB] overflow-hidden">
@@ -191,6 +273,23 @@ export default function App() {
           >
             {activeTab === 'istatistikler' && <div className="absolute left-0 w-1.5 h-6 bg-black rounded-r-full" />}
             <span>İstatistikler</span>
+          </div>
+          
+          <div className="pt-4 mt-4 border-t border-gray-100">
+            <button 
+              onClick={handleToggleSelectionMode}
+              className={`w-full flex items-center justify-between px-4 py-3 rounded-xl transition-all ${
+                isSelectionMode 
+                  ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' 
+                  : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <Sparkles className={`w-4 h-4 ${isSelectionMode ? 'text-white' : 'text-indigo-600'}`} />
+                <span className="text-xs font-bold uppercase tracking-wider">Manuel Kombin</span>
+              </div>
+              {isSelectionMode && <X className="w-4 h-4" />}
+            </button>
           </div>
         </nav>
 
@@ -273,13 +372,23 @@ export default function App() {
           </div>
           <div className="flex space-x-2">
             {activeTab === 'koleksiyon' && (
-              <button
-                onClick={() => setShowAddModal(true)}
-                className="w-full sm:w-auto flex items-center justify-center gap-2 px-4 py-2.5 bg-black text-white rounded-xl text-sm font-medium shadow-lg shadow-black/10 hover:bg-gray-900 transition-all active:scale-95"
-              >
-                <Plus className="w-4 h-4" />
-                Yeni Ekle
-              </button>
+              <div className="flex items-center gap-2">
+                {isSelectionMode && (
+                  <button
+                    onClick={handleToggleSelectionMode}
+                    className="px-4 py-2.5 bg-gray-100 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-200 transition-all"
+                  >
+                    Vazgeç
+                  </button>
+                )}
+                <button
+                  onClick={() => setShowAddModal(true)}
+                  className="w-full sm:w-auto flex items-center justify-center gap-2 px-4 py-2.5 bg-black text-white rounded-xl text-sm font-medium shadow-lg shadow-black/10 hover:bg-gray-900 transition-all active:scale-95"
+                >
+                  <Plus className="w-4 h-4" />
+                  Yeni Ekle
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -317,13 +426,23 @@ export default function App() {
 
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
                   {selectedItemsDetails.map(item => (
-                    <div key={item.id} className="bg-white p-3 rounded-2xl border border-indigo-100 shadow-sm">
+                    <div key={item.id} className="bg-white p-3 rounded-2xl border border-indigo-100 shadow-sm relative group">
                       <div className="aspect-square bg-gray-50 rounded-xl mb-3 overflow-hidden">
                         <img src={item.imagePath} alt={item.name} className="w-full h-full object-cover"
                           onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
                       </div>
                       <p className="text-xs font-bold text-indigo-400 uppercase tracking-tighter">{item.category}</p>
                       <p className="text-sm font-medium text-gray-900 truncate">{item.name}</p>
+                      
+                      {/* Değiştir Butonu */}
+                      <button 
+                         onClick={() => handleReplaceItem(item.id)}
+                         disabled={isGenerating}
+                         title="Sadece bu parçayı değiştir"
+                         className="absolute -top-3 -right-3 bg-white border border-gray-200 shadow-md text-gray-500 hover:text-indigo-600 hover:border-indigo-300 rounded-full p-2 opacity-0 group-hover:opacity-100 transition-all disabled:opacity-50"
+                      >
+                         <RefreshCw className={`w-4 h-4 ${isGenerating ? 'animate-spin text-indigo-600' : ''}`} />
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -335,7 +454,7 @@ export default function App() {
                 <div className="flex justify-end border-t border-indigo-100 pt-4 mt-2">
                   <button
                     onClick={async () => {
-                      const name = prompt('Kombin için bir isim girin:', 'Favori Kombinim');
+                      const name = await ask('Kombin İsmi', 'Favori Kombinim');
                       if (!name) return;
                       try {
                         const res = await fetch('/api/outfits', {
@@ -349,11 +468,11 @@ export default function App() {
                           })
                         });
                         if (res.ok) {
-                          alert('Kombin kaydedildi!');
+                          notify('Kombin kaydedildi!', 'success');
                           fetchOutfits();
                         } else throw new Error();
                       } catch {
-                        alert('Kombin kaydedilemedi');
+                        notify('Kombin kaydedilemedi', 'error');
                       }
                     }}
                     className="flex items-center gap-2 px-5 py-2 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 transition-all shadow-md shadow-indigo-200"
@@ -371,7 +490,14 @@ export default function App() {
               <div className="w-8 h-8 border-4 border-gray-100 border-t-black rounded-full animate-spin" />
             </div>
           ) : (
-            <WardrobeGrid items={items} onDelete={handleDeleteItem} onClickItem={setSelectedItem} />
+            <WardrobeGrid 
+              items={items} 
+              onDelete={handleDeleteItem} 
+              onClickItem={setSelectedItem} 
+              isSelectionMode={isSelectionMode}
+              selectedItems={selectedForOutfit}
+              onSelectItem={handleItemSelect}
+            />
           )}
           </>
           ) : activeTab === 'kombinlerim' ? (
@@ -440,7 +566,7 @@ export default function App() {
           </button>
         </div>
         <div className="mb-8 overflow-y-auto flex-grow custom-scrollbar space-y-8 pr-1">
-          <OutfitPlanner items={items} onGenerate={(req) => { handleGenerate(req); setMobilePlannerOpen(false); }} isGenerating={isGenerating} />
+          <OutfitPlanner items={items} onGenerate={(req) => { handleGenerate(req); setMobilePlannerOpen(false); }} isGenerating={isGenerating} onNotify={notify} />
         </div>
       </section>
 
@@ -455,6 +581,7 @@ export default function App() {
           <AddItemModal
             onClose={() => setShowAddModal(false)}
             onAdded={handleItemAdded}
+            onNotify={notify}
           />
         )}
         {selectedItem && (
@@ -465,9 +592,67 @@ export default function App() {
               setItems(prev => prev.map(i => i.id === updatedItem.id ? updatedItem : i));
               setSelectedItem(updatedItem);
             }}
+            onNotify={notify}
           />
         )}
       </AnimatePresence>
+
+      {/* Manuel Kombin Bar */}
+      <AnimatePresence>
+        {isSelectionMode && selectedForOutfit.length > 0 && (
+          <motion.div 
+            initial={{ y: 100, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 100, opacity: 0 }}
+            className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 bg-gray-900 text-white px-6 py-4 rounded-3xl shadow-2xl flex items-center gap-6 min-w-[300px] border border-white/10 backdrop-blur-xl"
+          >
+            <div className="flex flex-col">
+              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Seçilen Parçalar</span>
+              <span className="text-sm font-semibold">{selectedForOutfit.length} Kıyafet</span>
+            </div>
+            
+            <div className="h-8 w-px bg-white/10" />
+            
+            <div className="flex gap-2 flex-grow overflow-x-auto max-w-[200px] no-scrollbar">
+              {selectedForOutfit.map(id => {
+                const item = items.find(i => i.id === id);
+                return (
+                  <div key={id} className="w-8 h-8 rounded-lg overflow-hidden border border-white/20 shrink-0">
+                    <img src={item?.imagePath} className="w-full h-full object-cover" alt="" />
+                  </div>
+                );
+              })}
+            </div>
+            
+            <button
+              onClick={handleSaveManualOutfit}
+              className="bg-indigo-600 text-white px-6 py-2 rounded-2xl text-xs font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-500/20 whitespace-nowrap"
+            >
+              Kombini Tamamla
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Bildirimler ve Custom Modallar */}
+      <NotificationCenter 
+        notifications={notifications} 
+        onClose={(id) => setNotifications(prev => prev.filter(n => n.id !== id))} 
+      />
+      
+      <PromptModal
+        isOpen={promptConfig.isOpen}
+        title={promptConfig.title}
+        defaultValue={promptConfig.defaultValue}
+        onConfirm={(val) => {
+          promptConfig.resolve(val);
+          setPromptConfig(prev => ({ ...prev, isOpen: false }));
+        }}
+        onCancel={() => {
+          promptConfig.resolve(null);
+          setPromptConfig(prev => ({ ...prev, isOpen: false }));
+        }}
+      />
     </div>
   );
 }

@@ -1,0 +1,121 @@
+# 🌟 DİJİTAL GARDIROP - PROJE SÜRECİ 🌟
+
+
+## 🛠️ 1. TEKNOLOJİ YIĞINI (TECH STACK)
+
+Modern, hızlı ve ölçeklenebilir bir yapı kurmak için şu teknolojileri seçtik:
+
+- **Frontend:** React + Vite + TailwindCSS (Hızlı derleme ve modern UI)
+- **Backend:** Node.js + Express (Hafif ve güçlü API yönetimi)
+- **Veritabanı:** MongoDB (Esnek NoSQL yapısı ile kıyafet ve kombinleri saklama)
+- **Depolama:** Cloudinary (Görselleri bulutta güvenle saklama ve optimize etme)
+- **Yapay Zeka:** Google Gemini API (Görsel analiz ve akıllı kombin oluşturma)
+- **Deployment (Dağıtım):** Vercel (Serverless mimari ile anında yayına alma)
+
+---
+
+## ☁️ 2. BULUT ENTEGRASYONLARI
+
+Projeyi lokalden kurtarıp her yerden erişilebilir bir SaaS yapısına geçirdik.
+
+### 🖼️ Cloudinary (Görsel Depolama)
+Eskiden görselleri yerel bir klasörde tutuyorduk. Ancak Vercel gibi Serverless ortamlarda dosya yüklemek için bulut depolama şarttır. 
+- **Nasıl Çalışıyor?** Kullanıcı bir kıyafet fotoğrafı yüklediğinde, `multer-storage-cloudinary` kütüphanesi ile fotoğraf doğrudan Cloudinary'ye yükleniyor. Bize sadece güvenli bir URL (`imagePath`) dönüyor ve bunu veritabanına kaydediyoruz.
+
+### 🗄️ MongoDB (Veri Yönetimi)
+JSON dosyalarından (lokal veritabanı) kurtulup MongoDB Atlas'a geçtik.
+- **Şemalarımız (Mongoose):**
+  - `ItemModel`: Kıyafetlerin rengi, stili, hava durumu uyumu, kategorisi vb. özellikleri.
+  - `OutfitModel`: Oluşturulan kombinlerin kaydedildiği, uyumluluk puanı ve AI yorumlarını içeren yapı.
+
+### 🚀 Vercel (Deployment)
+Uygulamayı Vercel üzerinden serverless olarak deploy ettik.
+- **Neden Vercel?** Sıfır konfigürasyon, GitHub ile otomatik entegrasyon ve Express API'mizi `server.ts` üzerinden anında Serverless fonksiyonlara çevirme yeteneği.
+- **CORS:** Güvenlik için Vercel linklerine ve `localhost` ortamlarına özel CORS kuralları yazıldı.
+
+---
+
+## 🧠 3. YAPAY ZEKA VE GEMINI API KULLANIMI
+
+Sistemin kalbinde, kıyafetleri anlayan ve stilist gibi davranan **Google Gemini** modelleri yatıyor. Kesintisiz bir deneyim için **Fallback (Yedekleme) Mimarisi** kurduk.
+
+### 🤖 Kullanılan Modeller (Hız ve Kalite Sıralı Fallback):
+1. `gemini-flash-latest` (Ana Tercihimiz - Çok Hızlı)
+2. `gemini-2.5-flash` (Yeni Sürüm Alternatifi)
+3. `gemini-2.0-flash` (Kararlı Sürüm)
+4. `gemini-3-flash-preview` (Deneysel Sürüm)
+
+*Eğer bir model yoğunluktan hata verirse (Örn: 429 Kota Hatası), sistem otomatik olarak listedeki diğer modele geçiş yapar.*
+
+### 👁️ Gemini Vision (Otomatik Kıyafet Analizi)
+- Kullanıcı kıyafet yüklediğinde arka planda görsel base64'e çevrilir ve Gemini Vision modeline gönderilir.
+- **Çıktı (JSON):** Model bize kıyafetin; adını, kategorisini (alt, üst, ayakkabı), rengini, materyalini, kesimini (fit), desenini ve **hangi hava durumuna uygun olduğunu** otomatik çıkarır.
+
+### 👔 Dijital Stilist (Akıllı Kombin Jeneratörü)
+- Kullanıcı "Şu konumdayım, hava durumunu dikkate al, ruh halim şu" gibi veriler girer.
+- Arka planda `Open-Meteo API` ile kullanıcının konumundaki **canlı hava durumu** çekilir.
+- Gemini'ye tüm gardırop verisi ve hava durumu gönderilir.
+- Gemini kurallara uygun olarak: 1 Üst + 1 Alt + 1 Ayakkabı seçer, onlara 100 üzerinden **Uyumluluk Puanı** verir ve Türkçe bir **Stil Yorumu** (stylingReason) yazar.
+
+---
+
+## ⚙️ 4. UYGULAMA MANTIĞI VE AKIŞI (WORKFLOW)
+
+Aşağıdaki infografik harita, sistemin nasıl çalıştığını özetliyor:
+
+```text
+┌────────────────┐                     ┌───────────────────┐
+│                │ 1. Görsel Yükler    │                   │
+│   KULLANICI    ├────────────────────►│     FRONTEND      │
+│                │                     │                   │
+└───────┬────────┘                     └─────────┬─────────┘
+        │                                        │
+        │                                        │ 2. API İsteği
+        │                                        ▼
+        │                              ┌───────────────────┐
+        │                              │    EXPRESS API    │
+        │                              │   (Arka Plan)     │
+        │                              └────┬─────────┬────┘
+        │                                   │         │
+        │               3. Yükleme (Multer) │         │ 4. Analiz (Base64)
+        │                                   ▼         ▼
+        │                  ┌──────────────────┐     ┌──────────────────┐
+        │                  │                  │     │                  │
+        │                  │   CLOUDINARY     │     │  GEMINI VISION   │
+        │                  │                  │     │                  │
+        │                  └────────┬─────────┘     └─────────┬────────┘
+        │                           │                         │
+        │                           │ 5. Resim URL'si         │ 6. Renk, Kategori vb.
+        │                           ▼                         ▼
+        │                  ┌───────────────────────────────────────┐
+        │                  │                                       │
+        │                  │             MONGODB ATLAS             │
+        │                  │                                       │
+        │                  └───────────────────────────────────────┘
+        │
+        │
+        │ 7. Kombin İsteği (Konum/Etkinlik)
+        ▼
+┌───────────────────┐      ┌──────────────────┐     ┌──────────────────┐
+│                   │      │                  │     │                  │
+│    EXPRESS API    ├─────►│  OPEN-METEO API  ├────►│  GEMINI STİLİST  │
+│                   │ Hava │  (Canlı Hava)    │     │ (Kombin Yaratır) │
+└─────────┬─────────┘      └──────────────────┘     └─────────┬────────┘
+          │                                                   │
+          │ 8. Sonuçları Görüntüler                           │
+          ▼                                                   │
+┌───────────────────┐                                         │
+│     FRONTEND      │◄────────────────────────────────────────┘
+└───────────────────┘
+```
+
+---
+
+## 🎯 SONUÇ VE KAZANIMLAR
+
+1. **Ölçeklenebilirlik:** MongoDB ve Cloudinary sayesinde sistem artık binlerce kullanıcının kıyafetini tutabilecek kapasitede.
+2. **Dayanıklılık (Resilience):** Gemini Multi-Model Fallback yapısı sayesinde, API çökmelerinde veya limit aşımlarında uygulama hata vermez, alternatif modele geçer.
+3. **Tam Otomasyon:** Kıyafetlerin etiketlenmesi manuel bir yük olmaktan çıkıp %100 yapay zeka destekli hale geldi.
+4. **Prodüksiyon Hazır:** Vercel entegrasyonu ile artık uygulama sadece "localhost" üzerinde çalışan bir script değil, dünyaya açık gerçek bir web ürünü.
+
+Teşekkürler! 🎉
