@@ -21,10 +21,14 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
 // Hız ve kalite dengesine göre öncelik sırasına dizilmiş güncel modeller
 const FALLBACK_MODELS = [
-  'gemini-flash-latest',       // 1. Tercih: Terminal testinde 200 OK (Çalışan) model
-  'gemini-2.5-flash',          // 2. Tercih: Alternatif yeni sürüm
-  'gemini-2.0-flash',          // 3. Tercih: Limit bekleyen sürüm
-  'gemini-3-flash-preview'
+  'models/gemini-2.5-flash',
+  'models/gemini-2.0-flash',
+  'models/gemini-2.0-flash-lite',   // Hafif ve hızlı alternatif
+  'models/gemini-3.1-flash-lite',  // En yeni lite sürüm
+  'models/gemini-3-flash-preview', // Yeni nesil önizleme
+  'models/gemini-flash-latest',
+  'models/gemini-flash-lite-latest',
+  'models/gemini-2.5-pro'
 ];
 
 async function executeWithFallback<T>(fn: (modelName: string) => Promise<T>): Promise<T> {
@@ -115,42 +119,41 @@ const OutfitModel = mongoose.models.Outfit || mongoose.model('Outfit', OutfitSch
 // ─── Gemini Vision: Görsel Analizi ────────────────────────────────────────
 async function analyzeImageData(base64: string, mimeType: string) {
   try {
-    const response = await executeWithFallback((modelName) => ai.models.generateContent({
-      model: modelName,
-      contents: [
-        {
-          parts: [
-            { inlineData: { mimeType, data: base64 } },
-            {
-              text: `Bu bir giysi veya aksesuar fotoğrafı. Lütfen analiz et ve aşağıdaki JSON formatında Türkçe bilgi ver.
-Kategori seçenekleri: top (üst giysi), bottom (alt giysi), shoes (ayakkabı), makeup (makyaj), accessory (aksesuar)
+    const response = await executeWithFallback(async (modelName) => {
+      return await ai.models.generateContent({
+        model: modelName,
+        contents: [
+          { inlineData: { mimeType, data: base64 } },
+          {
+            text: `Bu bir giysi veya aksesuar fotoğrafı. Lütfen analiz et ve aşağıdaki JSON formatında Türkçe bilgi ver.
+Kategori seçenekleri: top (üst giysi), bottom (alt giysi), outerwear (dış giyim/kaban/ceket), shoes (ayakkabı), makeup (makyaj), accessory (aksesuar)
 Stil seçenekleri: casual, formal, sport, elegant, bohemian
 Hava seçenekleri (array): sunny, cloudy, rainy, snowy, hot, cold
 Desen seçenekleri (pattern): düz, çizgili, kareli, çiçekli, grafik, noktalı vb.
 Kesim seçenekleri (fit): dar, normal, bol, oversize`
-            }
-          ]
+          }
+        ],
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              name:        { type: Type.STRING },
+              category:    { type: Type.STRING },
+              subCategory: { type: Type.STRING },
+              color:       { type: Type.STRING },
+              material:    { type: Type.STRING },
+              style:       { type: Type.STRING },
+              pattern:     { type: Type.STRING },
+              fit:         { type: Type.STRING },
+              weatherMatch:{ type: Type.ARRAY, items: { type: Type.STRING } }
+            },
+            required: ['name', 'category', 'subCategory', 'color', 'style', 'weatherMatch']
+          }
         }
-      ],
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            name:        { type: Type.STRING, description: 'Türkçe adı (örn: "Lacivert Slim Fit Gömlek")' },
-            category:    { type: Type.STRING },
-            subCategory: { type: Type.STRING },
-            color:       { type: Type.STRING },
-            material:    { type: Type.STRING },
-            style:       { type: Type.STRING },
-            pattern:     { type: Type.STRING },
-            fit:         { type: Type.STRING },
-            weatherMatch:{ type: Type.ARRAY, items: { type: Type.STRING } }
-          },
-          required: ['name', 'category', 'subCategory', 'color', 'style', 'weatherMatch']
-        }
-      }
-    }));
+      });
+    });
+
     return JSON.parse(response.text);
   } catch (err) {
     console.error('[Vision] Analiz hatası:', err);
@@ -221,14 +224,36 @@ app.use(cors({
   }
 }));
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '20mb' })); // Mobil kamera fotoğrafları base64'te ~10-15 MB olabilir
 app.use((req, res, next) => { console.log(`[Server] ${req.method} ${req.url}`); next(); });
+
+// ─── Teşhis Hattı ───────────────────────────────────────────
+app.get('/api/debug-models', async (req, res) => {
+  try {
+    const models = await ai.models.list();
+    res.json({ models });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ─── Routes ───────────────────────────────────────────────────────────────
 app.get('/api/wardrobe', async (req, res) => {
   try {
-    const items = await ItemModel.find();
-    res.json({ items });
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 50;
+    const skip = (page - 1) * limit;
+
+    const total = await ItemModel.countDocuments();
+    const items = await ItemModel.find().skip(skip).limit(limit).sort({ _id: -1 });
+
+    res.json({ 
+      items,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+      hasMore: page * limit < total
+    });
   } catch (err) {
     res.status(500).json({ error: 'Internal Server Error' });
   }
@@ -244,9 +269,12 @@ app.post('/api/wardrobe/enrich', async (req, res) => {
   try {
     const items = await ItemModel.find();
 
-    const isIncomplete = (item: any) =>
-      !item.color || !item.style || !item.material || !item.subCategory ||
-      item.category === 'top' && !item.subCategory;
+    // Üst/alt/dış giyimde desen ve kesim de eksik sayılır
+    const isIncomplete = (item: any) => {
+      const needsFitPattern = ['top', 'bottom', 'outerwear'].includes(item.category);
+      return !item.color || !item.style || !item.material || !item.subCategory ||
+        (needsFitPattern && (!item.pattern || !item.fit));
+    };
 
     const targets = items.filter(isIncomplete);
 
@@ -310,47 +338,75 @@ app.post('/api/analyze-image-base64', async (req, res) => {
 app.post('/api/generate-outfit', async (req, res) => {
   try {
     const { items, request } = req.body;
+    
+    // Veri temizliği (Payload Sanitization) - Gereksiz özellikleri (imagePath, db meta vs) çıkararak token tasarrufu sağlarız
+    const sanitizedItems = items.map((i: any) => ({
+      id: i.id,
+      category: i.category,
+      subCategory: i.subCategory,
+      color: i.color,
+      material: i.material,
+      style: i.style,
+      pattern: i.pattern,
+      fit: i.fit,
+      weatherMatch: i.weatherMatch
+    }));
+
     let liveWeatherStr = 'Dikkate alınacak (Önemsiz değil, ancak canlı veri alınamadı)';
     if (!request.ignoreWeather && request.location) {
       const liveWeather = await getWeatherForLocation(request.location);
       if (liveWeather) liveWeatherStr = `CANLI VERİ: ${liveWeather}`;
     }
 
-    const systemInstruction = `Sen profesyonel bir dijital stilist ve moda uzmanısın.
-Görevin, kullanıcının gardırobundaki parçaları kullanarak en uygun kombini oluşturmaktır.
+    const systemInstruction = `Sen elit bir moda tasarımcısı ve kişisel stil danışmanısın.
+Görevin, kullanıcının gardırobundaki parçaları kullanarak, verilen etkinlik, hava durumu ve kişisel stil bağlamına en uygun, estetik olarak kusursuz bir kombin oluşturmaktır.
+
 KURALLAR:
-1. Sadece verilen gardırop listesindeki parçaları kullan (ID'lere göre seç).
-2. Kombin zorunlu bileşenleri: 1 Üst (top) + 1 Alt (bottom) + 1 Ayakkabı (shoes).
- Opsiyonel: makeup, accessory.
-3. Uyumluluk Puanlaması (0-100):
- - Renk uyumu: Renkler birbiriyle uyumlu mu?
- - Stil uyumu: Parçalar aynı stil ailesinden mi?
- - Etkinlik uyumu: Seçilen etkinliğe uygun mu?
- ${request.ignoreWeather ? '- Hava durumu önemsiz (Kapalı mekan vs.).' : '- Hava durumu CANLI VERİ olarak iletilmiştir, KESİNLİKLE dikkate al.'}
-4. stylingReason'ı Türkçe, akıcı ve detaylı yaz.
-5. MUTLAKA JSON formatında yanıt ver.
-${request.requiredItems?.length ? `6. ZORUNLU: Şu ID'li parçaları KESİNLİKLE kombine dahil etmelisin: ${request.requiredItems.join(', ')}` : ''}
-${request.excludedItems?.length ? `7. YASAKLI: Şu ID'li parçaları KESİNLİKLE KULLANMA (seçme): ${request.excludedItems.join(', ')}` : ''}`;
+1. Yalnızca verilen GARDIROP LİSTESİ'ndeki parçaları (ID'lerine göre) kullanabilirsin. Asla listede olmayan bir eşya uydurma.
+2. KATMANLAMA VE KATEGORİ MANTIĞI:
+   - Standart bir kombin için 1 Üst (top) + 1 Alt (bottom) + 1 Ayakkabı (shoes) gereklidir.
+   - ÖZEL DURUM 1 (Elbise/Tulum): Eğer seçtiğin parça tek parça bir giysi (elbise, tulum vb.) ise, bu hem üst hem alt yerine geçer. Kombine fazladan bir "bottom" veya "top" EKLEME.
+   - ÖZEL DURUM 2 (Dış Giyim / Outerwear): Canlı hava durumu soğuk, rüzgarlı veya yağmurluysa, veya stil katmanlama gerektiriyorsa KESİNLİKLE uygun bir "outerwear" (dış giyim, kaban, mont, ceket) ekle.
+   - Opsiyonel olarak uygun "accessory" ve "makeup" parçaları ekleyebilirsin.
+3. HAVA DURUMU UYUMU:
+   - Canlı hava durumunu KESİNLİKLE dikkate al. Parçaların "weatherMatch" etiketleriyle hava koşullarını eşleştir.
+4. KİLİTLİ/ZORUNLU PARÇALAR (Required Items):
+   - Eğer kullanıcı zorunlu parçalar seçmişse, bunları kombine DAHİL ET.
+   - ÖNEMLİ: Zorunlu parçaların kategorilerini analiz et. Eğer kullanıcı zorunlu olarak bir "top" seçmişse, sen ikinci bir "top" SEÇME (katmanlama yapmıyorsan).
+5. AÇIKLAMA KALİTESİ (stylingReason):
+   - Neden bu parçaları seçtiğini, kullanıcının kişisel stil kimliğine, efor seviyesine ve hava durumuna nasıl uyduğunu profesyonel, ilham verici ve zarif bir Türkçe ile açıkla (2-3 cümle).
+6. MUTLAKA belirtilen JSON şemasında yanıt ver.`;
 
-    const userPrompt = `KONUM: ${request.location}\nETKİNLİK: ${request.event}\nEFOR/HAREKET SEVİYESİ: ${request.effort}/10\nRUH HALİ: ${request.mood || 'Belirtilmedi'}\nHAVA DURUMU DURUMU: ${request.ignoreWeather ? 'Önemsiz (Kapalı mekan)' : liveWeatherStr}\n${request.requiredItems?.length ? `ZORUNLU PARÇALAR: ${request.requiredItems.join(', ')}\n` : ''}${request.excludedItems?.length ? `YASAKLI PARÇALAR: ${request.excludedItems.join(', ')}\n` : ''}GARDIROP LİSTESİ (JSON):\n${JSON.stringify(items, null, 2)}`;
+    const userPrompt = `KONUM: ${request.location}
+ETKİNLİK: ${request.event}
+EFOR/HAREKET SEVİYESİ: ${request.effort}/10
+RUH HALİ: ${request.mood || 'Belirtilmedi'}
+KİŞİSEL BAĞLAM/STİL KİMLİĞİ: ${request.personalContext || 'Belirtilmedi'}
+ÖZEL STİL TERCİHLERİ: ${request.styleTags?.join(', ') || 'Belirtilmedi'}
+HAVA DURUMU: ${request.ignoreWeather ? 'Önemsiz (Kapalı mekan)' : liveWeatherStr}
+${request.requiredItems?.length ? `ZORUNLU PARÇALAR (Kesinlikle Kullan): ${request.requiredItems.join(', ')}\n` : ''}${request.excludedItems?.length ? `YASAKLI PARÇALAR (Kesinlikle Kullanma): ${request.excludedItems.join(', ')}\n` : ''}
+GARDIROP LİSTESİ (JSON):
+${JSON.stringify(sanitizedItems)}`;
 
-    const response = await executeWithFallback((modelName) => ai.models.generateContent({
-      model: modelName,
-      contents: userPrompt,
-      config: {
-        systemInstruction,
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            selectedItems:     { type: Type.ARRAY, items: { type: Type.STRING } },
-            stylingReason:     { type: Type.STRING },
-            compatibilityScore:{ type: Type.NUMBER }
-          },
-          required: ['selectedItems', 'stylingReason', 'compatibilityScore']
+    const response = await executeWithFallback(async (modelName) => {
+      return await ai.models.generateContent({
+        model: modelName,
+        contents: userPrompt,
+        config: {
+          systemInstruction: systemInstruction,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              selectedItems:     { type: Type.ARRAY, items: { type: Type.STRING } },
+              stylingReason:     { type: Type.STRING },
+              compatibilityScore:{ type: Type.NUMBER }
+            },
+            required: ['selectedItems', 'stylingReason', 'compatibilityScore']
+          }
         }
-      }
-    }));
+      });
+    });
 
     res.json(JSON.parse(response.text));
   } catch (err: any) {
@@ -365,8 +421,10 @@ app.post('/api/wardrobe/upload', upload.single('image'), async (req, res) => {
     const file = (req as any).file;
     if (!file) return res.status(400).json({ error: 'Dosya eksik' });
 
-    // multer-storage-cloudinary gives us req.file.path which is the Cloudinary URL
-    const imagePath = file.path; 
+    // multer-storage-cloudinary gives us req.file.path (Cloudinary URL)
+    // Otomatik format (WebP/AVIF), kalite ve max 1200px genişlik optimizasyonu ekle
+    const rawUrl   = file.path as string;
+    const imagePath = rawUrl.replace('/upload/', '/upload/f_auto,q_auto,w_1200/');
     const itemData  = JSON.parse(req.body.itemData || '{}');
     const autoAnalyze = req.body.autoAnalyze === 'true' || !itemData.category;
 
@@ -401,6 +459,8 @@ app.post('/api/wardrobe/upload', upload.single('image'), async (req, res) => {
   }
 });
 
+// Bu rota silindi çünkü yukarıya taşındı
+
 app.delete('/api/wardrobe/:id', async (req, res) => {
   try {
     await ItemModel.deleteOne({ id: req.params.id });
@@ -413,7 +473,7 @@ app.delete('/api/wardrobe/:id', async (req, res) => {
 app.put('/api/wardrobe/:id', async (req, res) => {
   try {
     // TS hatasını önlemek için query kısmına "as any" ekledik
-    const updated = await ItemModel.findOneAndUpdate({ id: req.params.id } as any, req.body, { new: true });
+    const updated = await ItemModel.findOneAndUpdate({ id: req.params.id } as any, req.body, { new: true } as any);
     if (!updated) return res.status(404).json({ error: 'Bulunamadı' });
     res.json({ success: true, item: updated });
   } catch {
@@ -453,6 +513,16 @@ app.delete('/api/outfits/:id', async (req, res) => {
     res.json({ success: true });
   } catch {
     res.status(500).json({ error: 'Silme başarısız' });
+  }
+});
+
+app.put('/api/outfits/:id', async (req, res) => {
+  try {
+    const updated = await OutfitModel.findOneAndUpdate({ id: req.params.id } as any, req.body, { new: true } as any);
+    if (!updated) return res.status(404).json({ error: 'Bulunamadı' });
+    res.json({ success: true, outfit: updated });
+  } catch {
+    res.status(500).json({ error: 'Güncelleme başarısız' });
   }
 });
 

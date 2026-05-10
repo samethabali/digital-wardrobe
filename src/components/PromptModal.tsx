@@ -1,17 +1,31 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Sparkles } from 'lucide-react';
+import { X, Sparkles, AlertTriangle } from 'lucide-react';
 
 interface Props {
   isOpen: boolean;
   title: string;
   defaultValue?: string;
   placeholder?: string;
+  /** Sadece onay/iptal gösterir, text input olmaz */
+  confirmOnly?: boolean;
+  /** confirmOnly=true iken gösterilecek mesaj */
+  message?: string;
+  /** confirmOnly=false: text değer döner. confirmOnly=true: 'CONFIRM' döner */
   onConfirm: (value: string) => void;
   onCancel: () => void;
 }
 
-export default function PromptModal({ isOpen, title, defaultValue = '', placeholder, onConfirm, onCancel }: Props) {
+export default function PromptModal({
+  isOpen,
+  title,
+  defaultValue = '',
+  placeholder,
+  confirmOnly = false,
+  message,
+  onConfirm,
+  onCancel,
+}: Props) {
   const [value, setValue] = React.useState(defaultValue);
 
   React.useEffect(() => {
@@ -20,7 +34,11 @@ export default function PromptModal({ isOpen, title, defaultValue = '', placehol
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (value.trim()) onConfirm(value);
+    if (confirmOnly) {
+      onConfirm('CONFIRM');
+    } else if (value.trim()) {
+      onConfirm(value);
+    }
   };
 
   return (
@@ -42,23 +60,36 @@ export default function PromptModal({ isOpen, title, defaultValue = '', placehol
           >
             <div className="p-6">
               <div className="flex items-center gap-3 mb-5">
-                <div className="bg-indigo-600 p-2.5 rounded-xl">
-                  <Sparkles className="w-5 h-5 text-white" />
+                <div className={`p-2.5 rounded-xl ${confirmOnly ? 'bg-rose-50' : 'bg-indigo-600'}`}>
+                  {confirmOnly
+                    ? <AlertTriangle className="w-5 h-5 text-rose-500" />
+                    : <Sparkles className="w-5 h-5 text-white" />
+                  }
                 </div>
                 <h2 className="text-lg font-bold text-gray-900 tracking-tight">{title}</h2>
               </div>
 
               <form onSubmit={handleSubmit} className="space-y-5">
-                <div className="relative">
-                  <input
-                    autoFocus
-                    type="text"
-                    value={value}
-                    onChange={e => setValue(e.target.value)}
-                    placeholder={placeholder}
-                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-5 py-3.5 text-gray-900 focus:outline-none focus:border-indigo-500/50 focus:ring-4 focus:ring-indigo-500/5 transition-all text-base"
-                  />
-                </div>
+                {confirmOnly ? (
+                  // Onay modu: sadece mesaj göster
+                  message && (
+                    <p className="text-sm text-gray-600 bg-gray-50 rounded-xl px-4 py-3 leading-relaxed">
+                      {message}
+                    </p>
+                  )
+                ) : (
+                  // Metin giriş modu
+                  <div className="relative">
+                    <input
+                      autoFocus
+                      type="text"
+                      value={value}
+                      onChange={e => setValue(e.target.value)}
+                      placeholder={placeholder}
+                      className="w-full bg-gray-50 border border-gray-200 rounded-xl px-5 py-3.5 text-gray-900 focus:outline-none focus:border-indigo-500/50 focus:ring-4 focus:ring-indigo-500/5 transition-all text-base"
+                    />
+                  </div>
+                )}
 
                 <div className="flex gap-2">
                   <button
@@ -66,14 +97,18 @@ export default function PromptModal({ isOpen, title, defaultValue = '', placehol
                     onClick={onCancel}
                     className="flex-1 py-3 bg-gray-100 text-gray-600 rounded-xl text-sm font-bold hover:bg-gray-200 transition-all"
                   >
-                    Vazgeç
+                    {confirmOnly ? 'İptal' : 'Vazgeç'}
                   </button>
                   <button
                     type="submit"
-                    disabled={!value.trim()}
-                    className="flex-1 py-3 bg-indigo-600 text-white rounded-xl text-sm font-bold hover:bg-indigo-700 shadow-lg shadow-indigo-100 transition-all disabled:opacity-50 disabled:shadow-none"
+                    disabled={!confirmOnly && !value.trim()}
+                    className={`flex-1 py-3 text-white rounded-xl text-sm font-bold transition-all disabled:opacity-50 disabled:shadow-none shadow-lg ${
+                      confirmOnly
+                        ? 'bg-rose-500 hover:bg-rose-600 shadow-rose-100'
+                        : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-100'
+                    }`}
                   >
-                    Kaydet
+                    {confirmOnly ? 'Evet, Sil' : 'Kaydet'}
                   </button>
                 </div>
               </form>

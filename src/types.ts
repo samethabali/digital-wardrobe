@@ -1,4 +1,4 @@
-export type Category = 'top' | 'bottom' | 'shoes' | 'makeup' | 'accessory';
+export type Category = 'top' | 'bottom' | 'outerwear' | 'shoes' | 'makeup' | 'accessory';
 
 export interface WardrobeItem {
   id: string;
@@ -38,5 +38,8 @@ export interface StylistRequest {
   requiredItems?: string[]; // Must include item IDs
   excludedItems?: string[]; // Must NOT include item IDs
   ignoreWeather?: boolean;  // If true, don't consider weather match
+  personalContext?: string; // Global style identity from sidebar
+  styleTags?: string[];     // Selected style tags from planner
   additionalFilters?: Record<string, any>;
 }
+
