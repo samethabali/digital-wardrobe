@@ -186,24 +186,73 @@ export default function App() {
   };
 
   const handleEditOutfit = async (outfit: SavedOutfit) => {
-    const newName = await ask('Kombin İsmini Düzenle', outfit.name);
-    if (newName === null) return; // İptal
-
-    const newReason = await ask('Kombin Açıklamasını Düzenle', outfit.stylingReason);
-    if (newReason === null) return; // İptal
-
     try {
+      const newName = await ask('Kombin İsmi', outfit.name);
+      if (newName === null) return;
+
+      const newReason = await ask('Kombin Açıklaması', outfit.stylingReason);
+      if (newReason === null) return;
+
       const res = await fetch(`/api/outfits/${outfit.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newName, stylingReason: newReason })
+        body: JSON.stringify({ 
+          name: newName || outfit.name, 
+          stylingReason: newReason || outfit.stylingReason 
+        })
       });
+      
       if (res.ok) {
-        notify('Kombin güncellendi!', 'success');
+        notify('Kombin başarıyla güncellendi.', 'success');
         fetchOutfits();
-      } else throw new Error();
-    } catch {
-      notify('Güncelleme başarısız oldu.', 'error');
+      } else {
+        notify('Güncelleme sırasında bir hata oluştu.', 'error');
+      }
+    } catch (err) {
+      console.error('Edit error:', err);
+      notify('İşlem başarısız.', 'error');
+    }
+  };
+
+  const [targetOutfitId, setTargetOutfitId] = React.useState<string | null>(null);
+
+  const handleAddItemToOutfit = (outfitId: string) => {
+    setTargetOutfitId(outfitId);
+    setIsSelectionMode(true);
+    setSelectedForOutfit([]);
+    setActiveTab('koleksiyon');
+    notify('Kombine eklemek istediğiniz parçaları seçin.', 'info');
+  };
+
+  // handleSaveManualOutfit'i sarmalayan yeni fonksiyon
+  const handleSaveManualOutfitExtended = async () => {
+    if (targetOutfitId) {
+      // Mevcut kombine ekle
+      const outfit = savedOutfits.find(o => o.id === targetOutfitId);
+      if (!outfit) return;
+      
+      const updatedItems = [...new Set([...outfit.items, ...selectedForOutfit])];
+      
+      try {
+        const res = await fetch(`/api/outfits/${targetOutfitId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: updatedItems })
+        });
+        if (res.ok) {
+          notify('Parçalar kombine eklendi.', 'success');
+          setTargetOutfitId(null);
+          setIsSelectionMode(false);
+          setSelectedForOutfit([]);
+          setActiveTab('kombinlerim');
+          fetchOutfits();
+        }
+      } catch {
+        notify('Ekleme başarısız.', 'error');
+      }
+    } else {
+      // Normal manuel kayıt fonksiyonunu çağır
+      handleSaveManualOutfit();
     }
   };
 
@@ -613,6 +662,14 @@ export default function App() {
                         </button>
 
                         <button
+                          onClick={() => handleAddItemToOutfit(outfit.id)}
+                          className="p-1.5 text-text-secondary hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
+                          title="Parça Ekle"
+                        >
+                          <Plus className="w-4 h-4" />
+                        </button>
+
+                        <button
                           onClick={async () => {
                             const ok = await askConfirm('Kombini Sil', 'Bu kombini silmek istediğinize emin misiniz?');
                             if (!ok) return;
@@ -625,27 +682,59 @@ export default function App() {
                         </button>
                       </div>
                     </div>
-                    <div className="flex gap-3 mb-4 overflow-x-auto pb-2 custom-scrollbar no-scrollbar">
-                      {outfit.items.map(itemId => {
-                        const item = items.find(i => i.id === itemId);
-                        if (!item) return null;
-                        return (
-                          <div key={itemId} className="w-20 shrink-0 group relative cursor-pointer" onClick={() => setSelectedItem(item)}>
-                            <div className="aspect-square bg-primary rounded-xl mb-1 overflow-hidden border border-border-color group-hover:border-indigo-200 transition-colors">
-                              <img src={item.imagePath} alt={item.name}
-                                loading="lazy" decoding="async"
-                                className="w-full h-full object-cover" />
+                      <div className="flex gap-3 mb-4 overflow-x-auto pb-4 custom-scrollbar no-scrollbar">
+                        {outfit.items.map(itemId => {
+                          const item = items.find(i => i.id === itemId);
+                          if (!item) return null;
+                          return (
+                            <div key={itemId} className="w-24 shrink-0 group relative">
+                              <div className="aspect-square bg-primary rounded-2xl mb-1.5 overflow-hidden border border-border-color group-hover:border-indigo-200 transition-all cursor-pointer" onClick={() => setSelectedItem(item)}>
+                                <img src={item.imagePath} alt={item.name}
+                                  loading="lazy" decoding="async"
+                                  className="w-full h-full object-cover" />
+                              </div>
+                              <p className="text-[10px] text-center text-text-secondary truncate px-1">{item.name}</p>
+                              
+                              {/* Parçayı Kombinden Çıkar Butonu */}
+                              <button
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  const ok = await askConfirm('Parçayı Çıkar', 'Bu parçayı kombinden çıkarmak istediğinize emin misiniz?');
+                                  if (!ok) return;
+                                  
+                                  const newItems = outfit.items.filter(id => id !== itemId);
+                                  if (newItems.length === 0) {
+                                    notify('Kombin en az bir parça içermelidir. Kombini tamamen silmeyi deneyin.', 'info');
+                                    return;
+                                  }
+
+                                  try {
+                                    const res = await fetch(`/api/outfits/${outfit.id}`, {
+                                      method: 'PUT',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ items: newItems })
+                                    });
+                                    if (res.ok) {
+                                      notify('Parça kombinden çıkarıldı.', 'success');
+                                      fetchOutfits();
+                                    }
+                                  } catch {
+                                    notify('İşlem başarısız.', 'error');
+                                  }
+                                }}
+                                className="absolute -top-1 -right-1 p-1 bg-white dark:bg-gray-800 text-rose-500 border border-rose-100 dark:border-rose-900/30 rounded-full shadow-sm opacity-0 group-hover:opacity-100 transition-all hover:scale-110"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
                             </div>
-                            <p className="text-[10px] text-center text-text-secondary truncate">{item.name}</p>
-                          </div>
-                        );
-                      })}
+                          );
+                        })}
+                      </div>
+                      <p className="text-xs text-text-secondary bg-primary/50 p-3 rounded-xl italic border border-border-color/50 transition-colors">"{outfit.stylingReason}"</p>
                     </div>
-                    <p className="text-xs text-text-secondary bg-primary/50 p-3 rounded-xl italic border border-border-color/50 transition-colors">"{outfit.stylingReason}"</p>
-                  </div>
-                ))
-              )}
-            </div>
+                  ))
+                )}
+              </div>
           ) : (
             <div className="py-20 text-center text-gray-400">Yakında...</div>
           )}
@@ -653,7 +742,7 @@ export default function App() {
       </main>
 
       {/* Sağ Sidebar */}
-      <section className={`fixed md:relative inset-y-0 right-0 z-40 w-full sm:w-80 md:w-80 bg-secondary border-l border-border-color p-6 md:p-8 flex flex-col h-full shrink-0 transform transition-transform duration-300 ease-in-out ${mobilePlannerOpen ? 'translate-x-0' : 'translate-x-full md:translate-x-0'}`}>
+      <section className={`fixed md:relative inset-y-0 right-0 z-50 w-full sm:w-80 md:w-80 bg-secondary border-l border-border-color p-6 md:p-8 flex flex-col h-full shrink-0 transform transition-transform duration-300 ease-in-out ${mobilePlannerOpen ? 'translate-x-0' : 'translate-x-full md:translate-x-0'}`}>
         <div className="flex justify-between items-center mb-6 md:hidden">
           <div className="flex items-center gap-2 text-indigo-600">
             <Zap className="w-5 h-5 fill-current" />
@@ -664,6 +753,73 @@ export default function App() {
           </button>
         </div>
         <div className="mb-8 overflow-y-auto flex-grow custom-scrollbar space-y-8 pr-1 no-scrollbar">
+          {/* Mobil İçin Ek Araçlar (Sidebar'dan buraya taşındı) */}
+          <div className="md:hidden space-y-3 mb-6">
+            <button
+              onClick={() => { handleToggleSelectionMode(); setMobilePlannerOpen(false); }}
+              className={`w-full flex items-center justify-between px-4 py-4 rounded-2xl transition-all ${isSelectionMode
+                  ? 'bg-indigo-600 text-white shadow-lg'
+                  : 'bg-primary border border-border-color text-text-secondary'
+                }`}
+            >
+              <div className="flex items-center gap-3">
+                <Sparkles className={`w-5 h-5 ${isSelectionMode ? 'text-white' : 'text-indigo-600'}`} />
+                <span className="text-sm font-bold uppercase tracking-wider">Manuel Kombin</span>
+              </div>
+              {isSelectionMode && <X className="w-4 h-4" />}
+            </button>
+
+            <button
+              onClick={() => setShowContextInput(!showContextInput)}
+              className={`w-full flex items-center justify-between px-4 py-4 rounded-2xl transition-all ${showContextInput
+                  ? 'bg-indigo-600 text-white shadow-lg'
+                  : 'bg-primary border border-border-color text-text-secondary'
+                }`}
+            >
+              <div className="flex items-center gap-3">
+                <Fingerprint className={`w-5 h-5 ${showContextInput ? 'text-white' : 'text-indigo-600'}`} />
+                <span className="text-sm font-bold uppercase tracking-wider">Stil Kimliğim</span>
+              </div>
+              {showContextInput ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            </button>
+
+            <AnimatePresence>
+              {showContextInput && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  className="overflow-hidden"
+                >
+                  <div className="pt-2 pb-4">
+                    <textarea
+                      value={personalContext}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setPersonalContext(val);
+                        localStorage.setItem('aura_personal_context', val);
+                      }}
+                      placeholder="Stilinizi tanımlayın..."
+                      className="w-full h-32 p-4 text-sm bg-primary border border-border-color rounded-2xl focus:outline-none focus:ring-2 focus:ring-indigo-500/10 resize-none text-text-primary leading-relaxed"
+                    />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {missingCount > 0 && !enrichState.running && (
+              <button
+                onClick={handleEnrich}
+                className="w-full flex items-center justify-center gap-3 py-4 text-sm font-bold text-white bg-amber-500 hover:bg-amber-600 rounded-2xl transition-all shadow-lg shadow-amber-500/20"
+              >
+                <Wand2 className="w-5 h-5" />
+                {missingCount} Öğeyi AI ile Tamamla
+              </button>
+            )}
+
+            <div className="h-px bg-border-color my-6 opacity-50" />
+          </div>
+
           <OutfitPlanner
             items={items}
             onGenerate={(req) => { handleGenerate(req); setMobilePlannerOpen(false); }}
@@ -676,7 +832,7 @@ export default function App() {
 
       {/* Sağ Sidebar Backdrop */}
       {mobilePlannerOpen && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-30 md:hidden" onClick={() => setMobilePlannerOpen(false)} />
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden" onClick={() => setMobilePlannerOpen(false)} />
       )}
 
       {/* Yeni Kıyafet Modal */}
@@ -708,7 +864,7 @@ export default function App() {
             initial={{ y: 100, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: 100, opacity: 0 }}
-            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-gray-900 text-white px-4 md:px-6 py-3 md:py-4 rounded-3xl shadow-2xl flex items-center gap-3 md:gap-6 w-[calc(100vw-2rem)] max-w-[480px] border border-white/10 backdrop-blur-xl"
+            className="fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-[70] bg-gray-900 text-white px-4 md:px-6 py-3 md:py-4 rounded-3xl shadow-2xl flex items-center gap-3 md:gap-6 w-[calc(100vw-2rem)] max-w-[480px] border border-white/10 backdrop-blur-xl"
           >
             <div className="flex flex-col">
               <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Seçilen Parçalar</span>
@@ -729,10 +885,10 @@ export default function App() {
             </div>
 
             <button
-              onClick={handleSaveManualOutfit}
+              onClick={handleSaveManualOutfitExtended}
               className="bg-indigo-600 text-white px-6 py-2 rounded-2xl text-xs font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-500/20 whitespace-nowrap"
             >
-              Kombini Tamamla
+              {targetOutfitId ? 'Kombine Ekle' : 'Kombini Tamamla'}
             </button>
           </motion.div>
         )}
@@ -741,33 +897,33 @@ export default function App() {
 
 
       {/* Mobil Bottom Navigation Bar */}
-      <div className="md:hidden fixed bottom-0 left-0 right-0 bg-secondary/90 backdrop-blur-md border-t border-border-color pb-safe z-50 shadow-[0_-4px_20px_-10px_rgba(0,0,0,0.1)] transition-colors">
+      <div className="md:hidden fixed bottom-0 left-0 right-0 bg-secondary/90 backdrop-blur-md border-t border-border-color pb-safe z-[60] shadow-[0_-4px_20px_-10px_rgba(0,0,0,0.1)] transition-colors">
         <div className="flex justify-around items-center h-16 px-2">
-          <button onClick={() => setActiveTab('koleksiyon')} className={`flex flex-col items-center justify-center w-14 h-full transition-colors ${activeTab === 'koleksiyon' ? 'text-indigo-600' : 'text-text-secondary hover:text-text-primary'}`}>
-            <Shirt className={`w-5 h-5 mb-1 ${activeTab === 'koleksiyon' ? 'fill-indigo-50 dark:fill-indigo-900/20' : ''}`} />
+          <button onClick={() => { setActiveTab('koleksiyon'); setMobilePlannerOpen(false); }} className={`flex flex-col items-center justify-center w-14 h-full transition-colors ${activeTab === 'koleksiyon' && !mobilePlannerOpen ? 'text-indigo-600' : 'text-text-secondary'}`}>
+            <Shirt className={`w-5 h-5 mb-1 ${activeTab === 'koleksiyon' && !mobilePlannerOpen ? 'fill-indigo-50 dark:fill-indigo-900/20' : ''}`} />
             <span className="text-[10px] font-bold tracking-tight">Koleksiyon</span>
           </button>
-          <button onClick={() => setActiveTab('kombinlerim')} className={`flex flex-col items-center justify-center w-14 h-full transition-colors ${activeTab === 'kombinlerim' ? 'text-indigo-600' : 'text-text-secondary hover:text-text-primary'}`}>
-            <LayoutGrid className={`w-5 h-5 mb-1 ${activeTab === 'kombinlerim' ? 'fill-indigo-50 dark:fill-indigo-900/20' : ''}`} />
+          <button onClick={() => { setActiveTab('kombinlerim'); setMobilePlannerOpen(false); }} className={`flex flex-col items-center justify-center w-14 h-full transition-colors ${activeTab === 'kombinlerim' && !mobilePlannerOpen ? 'text-indigo-600' : 'text-text-secondary'}`}>
+            <LayoutGrid className={`w-5 h-5 mb-1 ${activeTab === 'kombinlerim' && !mobilePlannerOpen ? 'fill-indigo-50 dark:fill-indigo-900/20' : ''}`} />
             <span className="text-[10px] font-bold tracking-tight">Kombinler</span>
           </button>
 
           {/* Ortadaki Yüzer Ekleme Butonu (FAB) */}
           <div className="relative -top-5 flex flex-col items-center">
             <button
-              onClick={() => setShowAddModal(true)}
+              onClick={() => { setShowAddModal(true); setMobilePlannerOpen(false); }}
               className="bg-indigo-600 text-white p-3.5 rounded-2xl shadow-xl shadow-indigo-600/20 active:scale-95 hover:scale-105 transition-all"
             >
               <Plus className="w-6 h-6 stroke-[2.5]" />
             </button>
           </div>
 
-          <button onClick={() => setMobilePlannerOpen(true)} className={`flex flex-col items-center justify-center w-14 h-full transition-colors text-text-secondary hover:text-indigo-600`}>
-            <Zap className={`w-5 h-5 mb-1`} />
+          <button onClick={() => setMobilePlannerOpen(!mobilePlannerOpen)} className={`flex flex-col items-center justify-center w-14 h-full transition-colors ${mobilePlannerOpen ? 'text-indigo-600' : 'text-text-secondary'}`}>
+            <Zap className={`w-5 h-5 mb-1 ${mobilePlannerOpen ? 'fill-indigo-50 dark:fill-indigo-900/20' : ''}`} />
             <span className="text-[10px] font-bold tracking-tight">AI Asistan</span>
           </button>
-          <button onClick={() => setActiveTab('istatistikler')} className={`flex flex-col items-center justify-center w-14 h-full transition-colors ${activeTab === 'istatistikler' ? 'text-indigo-600' : 'text-text-secondary hover:text-text-primary'}`}>
-            <BarChart2 className={`w-5 h-5 mb-1 ${activeTab === 'istatistikler' ? 'fill-indigo-50 dark:fill-indigo-900/20' : ''}`} />
+          <button onClick={() => { setActiveTab('istatistikler'); setMobilePlannerOpen(false); }} className={`flex flex-col items-center justify-center w-14 h-full transition-colors ${activeTab === 'istatistikler' && !mobilePlannerOpen ? 'text-indigo-600' : 'text-text-secondary'}`}>
+            <BarChart2 className={`w-5 h-5 mb-1 ${activeTab === 'istatistikler' && !mobilePlannerOpen ? 'fill-indigo-50 dark:fill-indigo-900/20' : ''}`} />
             <span className="text-[10px] font-bold tracking-tight">Durum</span>
           </button>
         </div>

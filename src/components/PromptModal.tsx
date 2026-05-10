@@ -55,30 +55,28 @@ export default function PromptModal({
             initial={{ scale: 0.95, opacity: 0, y: 10 }}
             animate={{ scale: 1, opacity: 1, y: 0 }}
             exit={{ scale: 0.95, opacity: 0, y: 10 }}
-            className="bg-white rounded-[2rem] shadow-2xl w-full max-w-sm overflow-hidden border border-white/20"
+            className="bg-secondary rounded-[2.5rem] shadow-2xl w-full max-w-sm overflow-hidden border border-border-color transition-colors"
             onClick={e => e.stopPropagation()}
           >
-            <div className="p-6">
-              <div className="flex items-center gap-3 mb-5">
-                <div className={`p-2.5 rounded-xl ${confirmOnly ? 'bg-rose-50' : 'bg-indigo-600'}`}>
+            <div className="p-8">
+              <div className="flex items-center gap-4 mb-6">
+                <div className={`p-3 rounded-2xl ${confirmOnly ? 'bg-rose-50 dark:bg-rose-900/20' : 'bg-indigo-600 shadow-lg shadow-indigo-500/20'}`}>
                   {confirmOnly
-                    ? <AlertTriangle className="w-5 h-5 text-rose-500" />
-                    : <Sparkles className="w-5 h-5 text-white" />
+                    ? <AlertTriangle className="w-6 h-6 text-rose-500" />
+                    : <Sparkles className="w-6 h-6 text-white" />
                   }
                 </div>
-                <h2 className="text-lg font-bold text-gray-900 tracking-tight">{title}</h2>
+                <h2 className="text-xl font-bold text-text-primary tracking-tight">{title}</h2>
               </div>
 
-              <form onSubmit={handleSubmit} className="space-y-5">
+              <form onSubmit={handleSubmit} className="space-y-6">
                 {confirmOnly ? (
-                  // Onay modu: sadece mesaj göster
                   message && (
-                    <p className="text-sm text-gray-600 bg-gray-50 rounded-xl px-4 py-3 leading-relaxed">
+                    <p className="text-sm text-text-secondary bg-primary rounded-2xl px-5 py-4 leading-relaxed border border-border-color transition-colors">
                       {message}
                     </p>
                   )
                 ) : (
-                  // Metin giriş modu
                   <div className="relative">
                     <input
                       autoFocus
@@ -86,26 +84,26 @@ export default function PromptModal({
                       value={value}
                       onChange={e => setValue(e.target.value)}
                       placeholder={placeholder}
-                      className="w-full bg-gray-50 border border-gray-200 rounded-xl px-5 py-3.5 text-gray-900 focus:outline-none focus:border-indigo-500/50 focus:ring-4 focus:ring-indigo-500/5 transition-all text-base"
+                      className="w-full bg-primary border border-border-color rounded-2xl px-5 py-4 text-text-primary focus:outline-none focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500/50 transition-all text-base placeholder:text-text-secondary/50"
                     />
                   </div>
                 )}
 
-                <div className="flex gap-2">
+                <div className="flex gap-3">
                   <button
                     type="button"
                     onClick={onCancel}
-                    className="flex-1 py-3 bg-gray-100 text-gray-600 rounded-xl text-sm font-bold hover:bg-gray-200 transition-all"
+                    className="flex-1 py-4 bg-primary text-text-secondary rounded-2xl text-sm font-bold hover:bg-secondary hover:text-text-primary border border-border-color transition-all"
                   >
                     {confirmOnly ? 'İptal' : 'Vazgeç'}
                   </button>
                   <button
                     type="submit"
                     disabled={!confirmOnly && !value.trim()}
-                    className={`flex-1 py-3 text-white rounded-xl text-sm font-bold transition-all disabled:opacity-50 disabled:shadow-none shadow-lg ${
+                    className={`flex-1 py-4 text-white rounded-2xl text-sm font-bold transition-all disabled:opacity-50 disabled:shadow-none shadow-xl ${
                       confirmOnly
-                        ? 'bg-rose-500 hover:bg-rose-600 shadow-rose-100'
-                        : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-100'
+                        ? 'bg-rose-500 hover:bg-rose-600 shadow-rose-500/20'
+                        : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-500/20'
                     }`}
                   >
                     {confirmOnly ? 'Evet, Sil' : 'Kaydet'}
