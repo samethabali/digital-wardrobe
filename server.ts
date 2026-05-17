@@ -206,16 +206,23 @@ const app = express();
 const PORT = 3000;
 
 // ─── Güvenlik (CORS) ─────────────────────────────────────────────────────
-const allowedOrigins = process.env.NODE_ENV === 'production' 
-  ? [process.env.APP_URL, 'https://samethabali.github.io'] 
-  : ['http://localhost:3000', 'http://localhost:5173'];
+const allowedOrigins = [
+  process.env.APP_URL,
+  'https://samethabali.github.io',
+  'https://aura-mobile.expo.app',
+  'exp://aura-mobile.expo.app',
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'http://localhost:8081',
+  'exp://localhost:8081',
+];
 
 app.use(cors({
   origin: function(origin, callback) {
-    // Vercel üzerinden oluşturulan dinamik linklere (.vercel.app) izin ver
     const isVercel = origin && origin.endsWith('.vercel.app');
+    const isLocalIp = origin && (origin.startsWith('http://192.168.') || origin.startsWith('exp://192.168.'));
     
-    if (!origin || allowedOrigins.includes(origin) || isVercel) {
+    if (!origin || allowedOrigins.includes(origin) || isVercel || isLocalIp) {
       callback(null, true);
     } else {
       console.error(`[CORS] Engellenen origin: ${origin}`);
