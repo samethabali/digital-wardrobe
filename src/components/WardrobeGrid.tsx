@@ -30,6 +30,31 @@ export default React.memo(function WardrobeGrid({
   onLoadMore
 }: WardrobeGridProps) {
   const [filter, setFilter] = React.useState<Category | 'all'>('all');
+  const observerRef = React.useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    if (!hasMore || !onLoadMore) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          onLoadMore();
+        }
+      },
+      { threshold: 0.1, rootMargin: '150px' }
+    );
+
+    const currentRef = observerRef.current;
+    if (currentRef) {
+      observer.observe(currentRef);
+    }
+
+    return () => {
+      if (currentRef) {
+        observer.unobserve(currentRef);
+      }
+    };
+  }, [hasMore, onLoadMore]);
 
   const handleItemClick = (item: WardrobeItem) => {
     if (isSelectionMode && onSelectItem) {
@@ -159,15 +184,11 @@ export default React.memo(function WardrobeGrid({
         </div>
       )}
 
-      {/* Pagination Load More */}
+      {/* Sonsuz Kaydırma Yükleyici Göstergesi */}
       {hasMore && filteredItems.length > 0 && (
-        <div className="flex justify-center mt-8 pb-4">
-          <button
-            onClick={onLoadMore}
-            className="px-6 py-2 bg-secondary hover:bg-primary border border-border-color text-text-secondary rounded-full font-medium text-sm transition-all shadow-sm"
-          >
-            Daha Fazla Yükle
-          </button>
+        <div ref={observerRef} className="flex justify-center items-center py-6 mt-4">
+          <div className="w-5 h-5 border-2 border-indigo-500/20 border-t-indigo-600 rounded-full animate-spin" />
+          <span className="text-xs text-text-secondary ml-2 font-semibold">Daha fazla kıyafet yükleniyor...</span>
         </div>
       )}
     </div>

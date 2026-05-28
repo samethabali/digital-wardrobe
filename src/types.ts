@@ -1,7 +1,17 @@
 export type Category = 'top' | 'bottom' | 'outerwear' | 'shoes' | 'makeup' | 'accessory';
 
+export interface User {
+  id: string;
+  email: string;
+  username: string;
+  name: string;
+  isPrivate?: boolean;
+  createdAt: string;
+}
+
 export interface WardrobeItem {
   id: string;
+  userId?: string; // Belongs to a user
   name: string;
   category: Category;
   subCategory: string;
@@ -18,6 +28,7 @@ export interface WardrobeItem {
 
 export interface SavedOutfit {
   id: string;
+  userId?: string; // Belongs to a user
   name: string;
   items: string[]; // List of item IDs
   stylingReason: string;

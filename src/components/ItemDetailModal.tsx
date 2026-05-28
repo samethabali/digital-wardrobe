@@ -28,9 +28,13 @@ export default function ItemDetailModal({ item, onClose, onUpdate, onNotify }: P
   const handleSave = async () => {
     setSaving(true);
     try {
+      const token = localStorage.getItem('aura_token');
       const res = await fetch(`/api/wardrobe/${item.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify(form)
       });
       if (!res.ok) throw new Error('Güncelleme başarısız');

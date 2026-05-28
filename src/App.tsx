@@ -1,4 +1,12 @@
 import React from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { useAuth } from './contexts/AuthContext';
+import ProtectedRoute from './components/ProtectedRoute';
+import Login from './components/Login';
+import Register from './components/Register';
+import AccountSettings from './components/AccountSettings';
+import Explore from './components/Explore';
+import StatsDashboard from './components/StatsDashboard';
 import { motion, AnimatePresence } from 'motion/react';
 import WardrobeGrid from './components/WardrobeGrid';
 import OutfitPlanner from './components/OutfitPlanner';
@@ -9,18 +17,39 @@ import { useWardrobe } from './contexts/WardrobeContext';
 import { WardrobeItem, StylistRequest, SavedOutfit } from './types';
 import { generateOutfit } from './services/stylistService';
 import { CATEGORY_LABELS } from './constants/wardrobe';
-import { Sparkles, Plus, RefreshCw, Wand2, CheckCircle2, Save, Trash2, Menu, X, Zap, AlertCircle, Fingerprint, ChevronDown, ChevronUp, Shirt, LayoutGrid, BarChart2, Lock, Unlock, Sun, Moon, Edit3, Eye, EyeOff } from 'lucide-react';
+import { Sparkles, Plus, RefreshCw, Wand2, CheckCircle2, Save, Trash2, Menu, X, Zap, AlertCircle, Fingerprint, ChevronDown, ChevronUp, Shirt, LayoutGrid, BarChart2, Lock, Unlock, Sun, Moon, Edit3, Eye, EyeOff, LogOut, User } from 'lucide-react';
 
 export default function App() {
+  return (
+    <Router>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
+        <Route
+          path="/*"
+          element={
+            <ProtectedRoute>
+              <Dashboard />
+            </ProtectedRoute>
+          }
+        />
+      </Routes>
+    </Router>
+  );
+}
+
+function Dashboard() {
+  const { user, logout } = useAuth();
   const { notify, ask, askConfirm } = useNotification();
   const { items, loading, page, hasMore, missingCount, enrichState, fetchWardrobe, handleEnrich, handleDeleteItem, setItems } = useWardrobe();
-  const [activeTab, setActiveTab] = React.useState<'koleksiyon' | 'kombinlerim' | 'istatistikler'>('koleksiyon');
+  const [activeTab, setActiveTab] = React.useState<'koleksiyon' | 'kombinlerim' | 'istatistikler' | 'hesap' | 'kesfet'>('koleksiyon');
   const [selectedItem, setSelectedItem] = React.useState<WardrobeItem | null>(null);
   const [savedOutfits, setSavedOutfits] = React.useState<SavedOutfit[]>([]);
   const [isGenerating, setIsGenerating] = React.useState(false);
   const [generationStatus, setGenerationStatus] = React.useState('');
   const [showAddModal, setShowAddModal] = React.useState(false);
   const [mobilePlannerOpen, setMobilePlannerOpen] = React.useState(false);
+  const [isMobileDrawerOpen, setIsMobileDrawerOpen] = React.useState(false);
 
   const [result, setResult] = React.useState<{
     selectedItems: string[];
@@ -61,7 +90,12 @@ export default function App() {
 
   const fetchOutfits = async () => {
     try {
-      const response = await fetch('/api/outfits');
+      const token = localStorage.getItem('aura_token');
+      const response = await fetch('/api/outfits', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       if (response.ok) {
         const data = await response.json();
         setSavedOutfits(data.outfits || []);
@@ -72,8 +106,10 @@ export default function App() {
   };
 
   React.useEffect(() => {
-    fetchOutfits();
-  }, []);
+    if (user) {
+      fetchOutfits();
+    }
+  }, [user]);
 
   const handleItemAdded = async () => {
     setShowAddModal(false);
@@ -138,9 +174,13 @@ export default function App() {
     const name = await ask('Manuel Kombin İsmi', 'Benim Kombinim');
     if (!name) return;
     try {
+      const token = localStorage.getItem('aura_token');
       const res = await fetch('/api/outfits', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({
           name,
           items: selectedForOutfit,
@@ -193,9 +233,13 @@ export default function App() {
       const newReason = await ask('Kombin Açıklaması', outfit.stylingReason);
       if (newReason === null) return;
 
+      const token = localStorage.getItem('aura_token');
       const res = await fetch(`/api/outfits/${outfit.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({ 
           name: newName || outfit.name, 
           stylingReason: newReason || outfit.stylingReason 
@@ -234,9 +278,13 @@ export default function App() {
       const updatedItems = [...new Set([...outfit.items, ...selectedForOutfit])];
       
       try {
+        const token = localStorage.getItem('aura_token');
         const res = await fetch(`/api/outfits/${targetOutfitId}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
           body: JSON.stringify({ items: updatedItems })
         });
         if (res.ok) {
@@ -265,6 +313,15 @@ export default function App() {
           <button onClick={() => setDarkMode(!darkMode)} className="p-2 text-text-secondary hover:text-text-primary bg-primary rounded-xl transition-all">
             {darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
           </button>
+          {user && (
+            <button
+              onClick={() => setIsMobileDrawerOpen(true)}
+              title="Menüyü Aç"
+              className="p-2 text-text-secondary hover:text-text-primary bg-primary rounded-xl transition-all flex items-center justify-center shrink-0"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+          )}
           {missingCount > 0 && !enrichState.done && (
             <div className="flex items-center space-x-1.5 bg-amber-50 dark:bg-amber-900/20 px-2 py-1 rounded-full">
               <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
@@ -307,6 +364,20 @@ export default function App() {
           >
             {activeTab === 'istatistikler' && <div className="absolute left-0 w-1.5 h-6 bg-indigo-600 rounded-r-full" />}
             <span>İstatistikler</span>
+          </div>
+          <div
+            onClick={() => setActiveTab('kesfet')}
+            className={`flex items-center space-x-3 cursor-pointer pl-4 transition-colors ${activeTab === 'kesfet' ? 'text-primary font-medium relative -ml-4' : 'text-text-secondary hover:text-text-primary'}`}
+          >
+            {activeTab === 'kesfet' && <div className="absolute left-0 w-1.5 h-6 bg-indigo-600 rounded-r-full" />}
+            <span>Keşfet</span>
+          </div>
+          <div
+            onClick={() => setActiveTab('hesap')}
+            className={`flex items-center space-x-3 cursor-pointer pl-4 transition-colors ${activeTab === 'hesap' ? 'text-primary font-medium relative -ml-4' : 'text-text-secondary hover:text-text-primary'}`}
+          >
+            {activeTab === 'hesap' && <div className="absolute left-0 w-1.5 h-6 bg-indigo-600 rounded-r-full" />}
+            <span>Hesap Ayarları</span>
           </div>
 
           <div className="pt-4 mt-4 border-t border-border-color">
@@ -430,6 +501,31 @@ export default function App() {
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
             {loading ? 'Yenileniyor...' : 'Gardırobu Yenile'}
           </button>
+
+          {/* User Session Row */}
+          {user && (
+            <div className="pt-4 mt-2 border-t border-border-color/50 flex items-center justify-between overflow-hidden shrink-0">
+              <div 
+                onClick={() => setActiveTab('hesap')}
+                className="flex items-center gap-2 overflow-hidden cursor-pointer hover:opacity-80 transition-opacity"
+              >
+                <div className="w-8 h-8 rounded-xl bg-gradient-to-r from-indigo-500 to-fuchsia-500 flex items-center justify-center text-white text-xs font-black shrink-0 shadow-md shadow-indigo-500/10">
+                  {user.name.charAt(0).toUpperCase()}
+                </div>
+                <div className="flex flex-col overflow-hidden text-left">
+                  <span className="text-xs font-semibold text-text-primary truncate">{user.name}</span>
+                  <span className="text-[10px] text-text-secondary truncate">{user.email}</span>
+                </div>
+              </div>
+              <button
+                onClick={logout}
+                title="Çıkış Yap"
+                className="p-2 text-text-secondary hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded-xl transition-colors shrink-0"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
+          )}
         </div>
       </aside>
 
@@ -437,9 +533,19 @@ export default function App() {
       <main className="flex-1 flex flex-col p-4 pb-24 md:pb-8 md:p-8 overflow-hidden h-full z-10 relative">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end mb-6 shrink-0 gap-4">
           <div>
-            <h2 className="text-2xl md:text-3xl font-light text-text-primary mb-1">Gardırop</h2>
+            <h2 className="text-2xl md:text-3xl font-light text-text-primary mb-1">
+              {activeTab === 'koleksiyon' && 'Gardırop'}
+              {activeTab === 'kombinlerim' && 'Kombinlerim'}
+              {activeTab === 'istatistikler' && 'İstatistikler'}
+              {activeTab === 'hesap' && 'Hesap Ayarları'}
+              {activeTab === 'kesfet' && 'Dolap Keşfet'}
+            </h2>
             <p className="text-xs md:text-sm text-text-secondary">
-              {loading ? 'Yükleniyor...' : `${items.length} parça · Bulut Veritabanı`}
+              {activeTab === 'koleksiyon' && (loading ? 'Yükleniyor...' : `${items.length} parça · Bulut Veritabanı`)}
+              {activeTab === 'kombinlerim' && `${savedOutfits.length} kombin kaydedildi`}
+              {activeTab === 'istatistikler' && 'Sistem Analizi & Yapay Zeka Durumu'}
+              {activeTab === 'hesap' && 'Profilinizi ve güvenliğinizi yönetin'}
+              {activeTab === 'kesfet' && 'Diğer tarz sahiplerini ve açık gardıropları keşfedin'}
             </p>
           </div>
           <div className="flex space-x-2">
@@ -576,9 +682,13 @@ export default function App() {
                                 const name = await ask('Kombin İsmi', 'Favori Kombinim');
                                 if (!name) return;
                                 try {
+                                  const token = localStorage.getItem('aura_token');
                                   const res = await fetch('/api/outfits', {
                                     method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
+                                    headers: { 
+                                      'Content-Type': 'application/json',
+                                      'Authorization': `Bearer ${token}`
+                                    },
                                     body: JSON.stringify({
                                       name,
                                       items: result?.selectedItems || [],
@@ -673,7 +783,13 @@ export default function App() {
                           onClick={async () => {
                             const ok = await askConfirm('Kombini Sil', 'Bu kombini silmek istediğinize emin misiniz?');
                             if (!ok) return;
-                            await fetch(`/api/outfits/${outfit.id}`, { method: 'DELETE' });
+                            const token = localStorage.getItem('aura_token');
+                            await fetch(`/api/outfits/${outfit.id}`, { 
+                              method: 'DELETE',
+                              headers: {
+                                'Authorization': `Bearer ${token}`
+                              }
+                            });
                             fetchOutfits();
                           }}
                           className="p-1.5 text-text-secondary hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
@@ -708,10 +824,14 @@ export default function App() {
                                     return;
                                   }
 
+                                  const token = localStorage.getItem('aura_token');
                                   try {
                                     const res = await fetch(`/api/outfits/${outfit.id}`, {
                                       method: 'PUT',
-                                      headers: { 'Content-Type': 'application/json' },
+                                      headers: { 
+                                        'Content-Type': 'application/json',
+                                        'Authorization': `Bearer ${token}`
+                                      },
                                       body: JSON.stringify({ items: newItems })
                                     });
                                     if (res.ok) {
@@ -735,8 +855,12 @@ export default function App() {
                   ))
                 )}
               </div>
+          ) : activeTab === 'hesap' ? (
+            <AccountSettings />
+          ) : activeTab === 'kesfet' ? (
+            <Explore />
           ) : (
-            <div className="py-20 text-center text-gray-400">Yakında...</div>
+            <StatsDashboard />
           )}
         </div>
       </main>
@@ -928,6 +1052,110 @@ export default function App() {
           </button>
         </div>
       </div>
+
+      {/* Mobil Menü Çekmecesi (Mobile Drawer Menu) */}
+      <AnimatePresence>
+        {isMobileDrawerOpen && (
+          <>
+            {/* Karartma Maskesi */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 0.5 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsMobileDrawerOpen(false)}
+              className="md:hidden fixed inset-0 bg-black z-[100]"
+            />
+            {/* Drawer Gövdesi */}
+            <motion.div
+              initial={{ x: '-100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '-100%' }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className="md:hidden fixed inset-y-0 left-0 w-[280px] max-w-[85%] bg-secondary border-r border-border-color z-[101] flex flex-col p-6 shadow-2xl transition-colors text-left"
+            >
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h3 className="text-xs font-bold tracking-[0.2em] uppercase text-text-secondary mb-0.5">Aura</h3>
+                  <p className="text-base font-semibold text-primary">Akıllı Gardırop</p>
+                </div>
+                <button
+                  onClick={() => setIsMobileDrawerOpen(false)}
+                  className="p-2 hover:bg-primary rounded-xl transition-all text-text-secondary hover:text-text-primary"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Kullanıcı Bilgisi */}
+              {user && (
+                <div className="flex items-center gap-3 p-4 bg-primary/40 border border-border-color/50 rounded-2xl mb-6">
+                  <div className="w-10 h-10 rounded-xl bg-gradient-to-r from-indigo-500 to-fuchsia-500 flex items-center justify-center text-white text-sm font-black shadow-md shadow-indigo-500/10 shrink-0">
+                    {user.name.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="flex flex-col overflow-hidden">
+                    <span className="text-xs font-semibold text-text-primary truncate">{user.name}</span>
+                    <span className="text-[10px] text-text-secondary truncate">@{user.username}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Linkler */}
+              <nav className="space-y-2 flex-grow">
+                <button
+                  onClick={() => { setActiveTab('koleksiyon'); setMobilePlannerOpen(false); setIsMobileDrawerOpen(false); }}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all text-left text-xs font-bold uppercase tracking-wider ${activeTab === 'koleksiyon' && !mobilePlannerOpen ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-text-secondary hover:text-text-primary hover:bg-primary'}`}
+                >
+                  <Shirt className="w-4 h-4" />
+                  <span>Koleksiyonum</span>
+                </button>
+                
+                <button
+                  onClick={() => { setActiveTab('kombinlerim'); setMobilePlannerOpen(false); setIsMobileDrawerOpen(false); }}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all text-left text-xs font-bold uppercase tracking-wider ${activeTab === 'kombinlerim' && !mobilePlannerOpen ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-text-secondary hover:text-text-primary hover:bg-primary'}`}
+                >
+                  <LayoutGrid className="w-4 h-4" />
+                  <span>Kombinlerim</span>
+                </button>
+
+                <button
+                  onClick={() => { setActiveTab('kesfet'); setMobilePlannerOpen(false); setIsMobileDrawerOpen(false); }}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all text-left text-xs font-bold uppercase tracking-wider ${activeTab === 'kesfet' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-text-secondary hover:text-text-primary hover:bg-primary'}`}
+                >
+                  <LayoutGrid className="w-4 h-4 text-indigo-500" />
+                  <span>Dolap Keşfet</span>
+                </button>
+
+                <button
+                  onClick={() => { setActiveTab('istatistikler'); setMobilePlannerOpen(false); setIsMobileDrawerOpen(false); }}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all text-left text-xs font-bold uppercase tracking-wider ${activeTab === 'istatistikler' && !mobilePlannerOpen ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-text-secondary hover:text-text-primary'}`}
+                >
+                  <BarChart2 className="w-4 h-4" />
+                  <span>İstatistikler</span>
+                </button>
+
+                <button
+                  onClick={() => { setActiveTab('hesap'); setMobilePlannerOpen(false); setIsMobileDrawerOpen(false); }}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all text-left text-xs font-bold uppercase tracking-wider ${activeTab === 'hesap' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-text-secondary hover:text-text-primary hover:bg-primary'}`}
+                >
+                  <User className="w-4 h-4" />
+                  <span>Hesap Ayarları</span>
+                </button>
+              </nav>
+
+              {/* Alt Kısım - Çıkış Yap */}
+              <div className="pt-4 border-t border-border-color/50">
+                <button
+                  onClick={logout}
+                  className="w-full flex items-center justify-center gap-2 py-3 text-xs font-bold uppercase tracking-wider text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded-xl transition-all"
+                >
+                  <LogOut className="w-4 h-4" />
+                  <span>Çıkış Yap</span>
+                </button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

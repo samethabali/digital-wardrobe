@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
 import { WardrobeItem } from '../types';
 import { useNotification } from './NotificationContext';
+import { useAuth } from './AuthContext';
 
 interface EnrichState {
   running: boolean;
@@ -29,6 +30,7 @@ const WardrobeContext = createContext<WardrobeContextType | undefined>(undefined
 
 export function WardrobeProvider({ children }: { children: ReactNode }) {
   const { notify, askConfirm } = useNotification();
+  const { token } = useAuth();
   const [items, setItems] = useState<WardrobeItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
@@ -45,9 +47,18 @@ export function WardrobeProvider({ children }: { children: ReactNode }) {
   }).length;
 
   const fetchWardrobe = useCallback(async (pageNum = 1, append = false) => {
+    if (!token) {
+      setItems([]);
+      setLoading(false);
+      return;
+    }
     try {
       if (!append) setLoading(true);
-      const response = await fetch(`/api/wardrobe?page=${pageNum}&limit=50`);
+      const response = await fetch(`/api/wardrobe?page=${pageNum}&limit=30`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       if (append) {
@@ -74,7 +85,13 @@ export function WardrobeProvider({ children }: { children: ReactNode }) {
     if (!ok) return;
 
     try {
-      const response = await fetch(`/api/wardrobe/${id}`, { method: 'DELETE' });
+      if (!token) return;
+      const response = await fetch(`/api/wardrobe/${id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       if (!response.ok) throw new Error();
       notify('Kıyafet silindi', 'success');
       fetchWardrobe(1, false);
@@ -86,7 +103,13 @@ export function WardrobeProvider({ children }: { children: ReactNode }) {
   const handleEnrich = useCallback(() => {
     setEnrichState({ running: true, total: 0, current: 0, currentName: '', enriched: 0, done: false, message: '' });
 
-    fetch('/api/wardrobe/enrich', { method: 'POST' })
+    if (!token) return;
+    fetch('/api/wardrobe/enrich', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    })
       .then(res => {
         const reader = res.body!.getReader();
         const decoder = new TextDecoder();
@@ -126,8 +149,13 @@ export function WardrobeProvider({ children }: { children: ReactNode }) {
   }, [fetchWardrobe, notify]);
 
   useEffect(() => {
-    fetchWardrobe();
-  }, [fetchWardrobe]);
+    if (token) {
+      fetchWardrobe(1, false);
+    } else {
+      setItems([]);
+      setLoading(false);
+    }
+  }, [token, fetchWardrobe]);
 
   return (
     <WardrobeContext.Provider value={{ items, loading, page, hasMore, missingCount, enrichState, fetchWardrobe, handleEnrich, handleDeleteItem, setItems }}>

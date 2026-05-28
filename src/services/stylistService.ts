@@ -70,9 +70,13 @@ export async function generateOutfit(
   signal?.addEventListener('abort', () => controller.abort());
 
   try {
+    const token = localStorage.getItem('aura_token');
     const response = await fetch('/api/generate-outfit', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
       body: JSON.stringify({ items: wardrobe, request }),
       signal: controller.signal,
     });
@@ -118,9 +122,13 @@ export async function analyzeImageFile(file: File): Promise<{
     }, 30_000);
 
     try {
+      const token = localStorage.getItem('aura_token');
       const res = await fetch('/api/analyze-image-base64', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({ base64, mimeType }),
         signal: controller.signal,
       });
@@ -137,7 +145,7 @@ export async function analyzeImageFile(file: File): Promise<{
       }
       return null;
     }
-  } catch {
+  } catch (codeErr) {
     return null;
   }
 }

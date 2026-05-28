@@ -9,6 +9,8 @@ import mongoose from 'mongoose';
 import { v2 as cloudinary } from 'cloudinary';
 import { CloudinaryStorage } from 'multer-storage-cloudinary';
 import { GoogleGenAI, Type } from '@google/genai';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 
 dotenv.config();
 
@@ -74,23 +76,38 @@ cloudinary.config({
 
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
-  params: async (req, file) => {
+  params: async (req: any, file) => {
+    const userId = req.user?.id || 'public';
+    const uniqueId = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const originalNameClean = file.originalname
+      .toLowerCase()
+      .replace(/\s+/g, '_')
+      .replace(/[^a-z0-9_\-.]/g, '');
+    const cleanPublicId = originalNameClean.replace(/\.[^/.]+$/, ""); // strip extension
+    
     return {
-      folder: 'digital_wardrobe',
+      folder: `digital_wardrobe/${userId}`,
       allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
-      public_id: file.originalname.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_\-.]/g, '')
+      public_id: `${cleanPublicId}_${uniqueId}`
     };
   },
 });
 const upload = multer({ storage: storage, limits: { fileSize: 15 * 1024 * 1024 } });
 
 // ─── MongoDB Setup ───────────────────────────────────────────
-mongoose.connect(process.env.MONGODB_URI || '')
-  .then(() => console.log('[MongoDB] Bağlantı başarılı.'))
-  .catch(err => console.error('[MongoDB] Bağlantı hatası:', err));
+const UserSchema = new mongoose.Schema({
+  email: { type: String, required: true, unique: true, index: true },
+  username: { type: String, required: true, unique: true, index: true },
+  passwordHash: { type: String, required: true },
+  name: { type: String, required: true },
+  isPrivate: { type: Boolean, default: false },
+  createdAt: { type: Date, default: Date.now }
+});
+const UserModel = mongoose.models.User || mongoose.model('User', UserSchema);
 
 const ItemSchema = new mongoose.Schema({
   id: String,
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
   name: String,
   category: String,
   subCategory: String,
@@ -108,6 +125,7 @@ const ItemModel = mongoose.models.Item || mongoose.model('Item', ItemSchema);
 
 const OutfitSchema = new mongoose.Schema({
   id: String,
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
   name: String,
   items: [String],
   stylingReason: String,
@@ -115,6 +133,76 @@ const OutfitSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 const OutfitModel = mongoose.models.Outfit || mongoose.model('Outfit', OutfitSchema);
+
+// JWT Secret
+const JWT_SECRET = process.env.JWT_SECRET || 'aura_secret_key_123_change_me';
+
+// Veri Göçü (Migration) Scripti
+async function runMigration() {
+  try {
+    const adminEmail = 'samet@aura.com';
+    let admin = await UserModel.findOne({ email: adminEmail } as any);
+    if (!admin) {
+      console.log('[Migration] samet@aura.com kullanıcısı oluşturuluyor...');
+      const passwordHash = await bcrypt.hash('Aura123!', 10);
+      admin = new UserModel({
+        email: adminEmail,
+        username: 'samet',
+        passwordHash,
+        name: 'Samet',
+        createdAt: new Date()
+      });
+      await admin.save();
+      console.log('[Migration] samet@aura.com başarıyla oluşturuldu.');
+    } else if (!(admin as any).username) {
+      (admin as any).username = 'samet';
+      await admin.save();
+      console.log('[Migration] samet@aura.com kullanıcısına default kullanıcı adı (samet) tanımlandı.');
+    }
+
+    // Herhangi bir şekilde kullanıcı adı (username) olmayan kullanıcıları güncelle
+    const usersWithoutUsername = await UserModel.find({ username: { $exists: false } } as any);
+    for (const u of usersWithoutUsername) {
+      const emailPrefix = u.email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
+      const uniqueSuffix = Math.random().toString(36).slice(2, 6);
+      (u as any).username = `${emailPrefix}_${uniqueSuffix}`;
+      await u.save();
+      console.log(`[Migration] ${u.email} kullanıcısına default kullanıcı adı (${(u as any).username}) tanımlandı.`);
+    }
+
+    // Herhangi bir şekilde isPrivate alanı olmayan kullanıcıları güncelle
+    const usersWithoutPrivacy = await UserModel.find({ isPrivate: { $exists: false } } as any);
+    if (usersWithoutPrivacy.length > 0) {
+      await UserModel.updateMany({ isPrivate: { $exists: false } } as any, { $set: { isPrivate: false } });
+      console.log(`[Migration] ${usersWithoutPrivacy.length} kullanıcının gizlilik ayarı varsayılan (false) yapıldı.`);
+    }
+
+    // userId'si olmayan gardırop öğelerini güncelle
+    const itemsWithoutUser = await ItemModel.find({ userId: { $exists: false } } as any);
+    if (itemsWithoutUser.length > 0) {
+      console.log(`[Migration] ${itemsWithoutUser.length} adet sahipsiz gardırop öğesi admin kullanıcısına bağlanıyor...`);
+      await ItemModel.updateMany({ userId: { $exists: false } } as any, { $set: { userId: admin._id } });
+      console.log('[Migration] Gardırop öğeleri başarıyla güncellendi.');
+    }
+
+    // userId'si olmayan kombinleri güncelle
+    const outfitsWithoutUser = await OutfitModel.find({ userId: { $exists: false } } as any);
+    if (outfitsWithoutUser.length > 0) {
+      console.log(`[Migration] ${outfitsWithoutUser.length} adet sahipsiz kombin admin kullanıcısına bağlanıyor...`);
+      await OutfitModel.updateMany({ userId: { $exists: false } } as any, { $set: { userId: admin._id } });
+      console.log('[Migration] Kombinler başarıyla güncellendi.');
+    }
+  } catch (err) {
+    console.error('[Migration] Hata oluştu:', err);
+  }
+}
+
+mongoose.connect(process.env.MONGODB_URI || '')
+  .then(() => {
+    console.log('[MongoDB] Bağlantı başarılı.');
+    runMigration();
+  })
+  .catch(err => console.error('[MongoDB] Bağlantı hatası:', err));
 
 // ─── Gemini Vision: Görsel Analizi ────────────────────────────────────────
 async function analyzeImageData(base64: string, mimeType: string) {
@@ -234,6 +322,54 @@ app.use(cors({
 app.use(express.json({ limit: '20mb' })); // Mobil kamera fotoğrafları base64'te ~10-15 MB olabilir
 app.use((req, res, next) => { console.log(`[Server] ${req.method} ${req.url}`); next(); });
 
+// Authentication Middleware
+function authenticateToken(req: any, res: express.Response, next: express.NextFunction) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // Bearer <token>
+
+  if (!token) {
+    return res.status(401).json({ error: 'Erişim engellendi. Token eksik.' });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err: any, user: any) => {
+    if (err) {
+      return res.status(403).json({ error: 'Geçersiz veya süresi dolmuş token.' });
+    }
+    req.user = user;
+    next();
+  });
+}
+
+// Cloudinary public_id helper
+function getPublicIdFromUrl(url: string): string | null {
+  try {
+    const parts = url.split('/upload/');
+    if (parts.length < 2) return null;
+    
+    let publicIdWithExtension = parts[1];
+    if (publicIdWithExtension.startsWith('v')) {
+      const slashIndex = publicIdWithExtension.indexOf('/');
+      if (slashIndex !== -1) {
+        publicIdWithExtension = publicIdWithExtension.substring(slashIndex + 1);
+      }
+    }
+    
+    if (publicIdWithExtension.includes('digital_wardrobe/')) {
+      const idx = publicIdWithExtension.indexOf('digital_wardrobe/');
+      publicIdWithExtension = publicIdWithExtension.substring(idx);
+    }
+
+    const dotIndex = publicIdWithExtension.lastIndexOf('.');
+    if (dotIndex !== -1) {
+      return publicIdWithExtension.substring(0, dotIndex);
+    }
+    return publicIdWithExtension;
+  } catch (e) {
+    console.error('[Cloudinary] Extract public_id error:', e);
+    return null;
+  }
+}
+
 // ─── Teşhis Hattı ───────────────────────────────────────────
 app.get('/api/debug-models', async (req, res) => {
   try {
@@ -244,15 +380,278 @@ app.get('/api/debug-models', async (req, res) => {
   }
 });
 
+// ─── AUTH ENDPOINTS ──────────────────────────────────────────────────────────
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { email, password, name, username } = req.body;
+    if (!email || !password || !name || !username) {
+      return res.status(400).json({ error: 'Lütfen tüm alanları doldurun.' });
+    }
+
+    const cleanUsername = username.trim().toLowerCase().replace(/\s+/g, '');
+    if (cleanUsername.length < 3) {
+      return res.status(400).json({ error: 'Kullanıcı adı en az 3 karakter olmalıdır.' });
+    }
+
+    const existingUser = await UserModel.findOne({ email: email.toLowerCase() } as any);
+    if (existingUser) {
+      return res.status(400).json({ error: 'Bu e-posta adresi zaten kullanımda.' });
+    }
+
+    const existingUsername = await UserModel.findOne({ username: cleanUsername } as any);
+    if (existingUsername) {
+      return res.status(400).json({ error: 'Bu kullanıcı adı zaten alınmış.' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const newUser = new UserModel({
+      email: email.toLowerCase(),
+      username: cleanUsername,
+      passwordHash,
+      name,
+      createdAt: new Date()
+    });
+
+    await newUser.save();
+    
+    const token = jwt.sign(
+      { id: newUser._id.toString(), email: newUser.email, username: newUser.username, name: newUser.name, isPrivate: false },
+      JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+
+    res.json({
+      success: true,
+      token,
+      user: {
+        id: newUser._id.toString(),
+        email: newUser.email,
+        username: newUser.username,
+        name: newUser.name,
+        isPrivate: false
+      }
+    });
+  } catch (err) {
+    console.error('[Register] Hata:', err);
+    res.status(500).json({ error: 'Kayıt işlemi başarısız oldu.' });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: 'E-posta ve şifre gereklidir.' });
+    }
+
+    const user = await UserModel.findOne({ email: email.toLowerCase() } as any);
+    if (!user) {
+      return res.status(401).json({ error: 'Hatalı e-posta veya şifre.' });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.passwordHash);
+    if (!isMatch) {
+      return res.status(401).json({ error: 'Hatalı e-posta veya şifre.' });
+    }
+
+    const token = jwt.sign(
+      { id: user._id.toString(), email: user.email, username: (user as any).username || '', name: user.name, isPrivate: (user as any).isPrivate || false },
+      JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+
+    res.json({
+      success: true,
+      token,
+      user: {
+        id: user._id.toString(),
+        email: user.email,
+        username: (user as any).username || '',
+        name: user.name,
+        isPrivate: (user as any).isPrivate || false
+      }
+    });
+  } catch (err) {
+    console.error('[Login] Hata:', err);
+    res.status(500).json({ error: 'Giriş işlemi başarısız oldu.' });
+  }
+});
+
+app.get('/api/auth/me', authenticateToken, async (req: any, res) => {
+  try {
+    const user = await UserModel.findOne({ _id: req.user.id } as any);
+    if (!user) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+    res.json({
+      user: {
+        id: user._id.toString(),
+        email: user.email,
+        username: (user as any).username || '',
+        name: user.name,
+        isPrivate: (user as any).isPrivate || false
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Sunucu hatası.' });
+  }
+});
+
+app.put('/api/auth/profile', authenticateToken, async (req: any, res) => {
+  try {
+    const { email, username, name, password, isPrivate } = req.body;
+    const user = await UserModel.findOne({ _id: req.user.id } as any);
+    if (!user) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+
+    if (email && email.toLowerCase() !== user.email) {
+      const existingEmail = await UserModel.findOne({ email: email.toLowerCase() } as any);
+      if (existingEmail) return res.status(400).json({ error: 'Bu e-posta zaten kullanımda.' });
+      user.email = email.toLowerCase();
+    }
+
+    if (username && username.trim().toLowerCase() !== (user as any).username) {
+      const cleanUsername = username.trim().toLowerCase().replace(/\s+/g, '');
+      if (cleanUsername.length < 3) return res.status(400).json({ error: 'Kullanıcı adı en az 3 karakter olmalıdır.' });
+      const existingUsername = await UserModel.findOne({ username: cleanUsername } as any);
+      if (existingUsername) return res.status(400).json({ error: 'Bu kullanıcı adı zaten alınmış.' });
+      (user as any).username = cleanUsername;
+    }
+
+    if (name) {
+      user.name = name;
+    }
+
+    if (password) {
+      if (password.length < 6) return res.status(400).json({ error: 'Şifre en az 6 karakter olmalıdır.' });
+      user.passwordHash = await bcrypt.hash(password, 10);
+    }
+
+    if (typeof isPrivate === 'boolean') {
+      (user as any).isPrivate = isPrivate;
+    }
+
+    await user.save();
+
+    const token = jwt.sign(
+      { id: user._id.toString(), email: user.email, username: (user as any).username, name: user.name, isPrivate: (user as any).isPrivate },
+      JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+
+    res.json({
+      success: true,
+      token,
+      user: {
+        id: user._id.toString(),
+        email: user.email,
+        username: (user as any).username,
+        name: user.name,
+        isPrivate: (user as any).isPrivate
+      }
+    });
+  } catch (err) {
+    console.error('[Profile Update] Hata:', err);
+    res.status(500).json({ error: 'Profil güncellenemedi.' });
+  }
+});
+
+app.delete('/api/auth/profile', authenticateToken, async (req: any, res) => {
+  try {
+    const userId = req.user.id;
+
+    // 1) Görselleri bul
+    const items = await ItemModel.find({ userId } as any);
+    const publicIds = items
+      .map(item => getPublicIdFromUrl(item.imagePath))
+      .filter(Boolean) as string[];
+
+    // 2) Cloudinary'den görselleri sil
+    if (publicIds.length > 0) {
+      console.log(`[Account Delete] ${publicIds.length} adet görsel Cloudinary'den siliniyor...`);
+      try {
+        await cloudinary.api.delete_resources(publicIds);
+      } catch (cloudinaryErr) {
+        console.error('[Account Delete] Cloudinary görselleri silinirken hata:', cloudinaryErr);
+      }
+    }
+
+    // 3) MongoDB'den kıyafetleri ve kombinleri sil
+    await ItemModel.deleteMany({ userId } as any);
+    await OutfitModel.deleteMany({ userId } as any);
+
+    // 4) Kullanıcıyı sil
+    await UserModel.deleteOne({ _id: userId } as any);
+
+    console.log(`[Account Delete] ${req.user.email} hesabı ve tüm verileri silindi.`);
+    res.json({ success: true, message: 'Hesabınız ve tüm verileriniz başarıyla silindi.' });
+  } catch (err) {
+    console.error('[Account Delete] Hata:', err);
+    res.status(500).json({ error: 'Hesap silme işlemi başarısız oldu.' });
+  }
+});
+
+// ─── EXPLORE SOCIAL NETWORKING ENDPOINTS ───────────────────────────────────────
+app.get('/api/users/explore', authenticateToken, async (req: any, res) => {
+  try {
+    const users = await UserModel.find({
+      _id: { $ne: req.user.id },
+      isPrivate: { $ne: true }
+    } as any).select('-passwordHash').sort({ createdAt: -1 } as any);
+
+    const exploreProfiles = await Promise.all(users.map(async (u: any) => {
+      const itemCount = await ItemModel.countDocuments({ userId: u._id } as any);
+      return {
+        id: u._id.toString(),
+        name: u.name,
+        username: (u as any).username,
+        createdAt: u.createdAt,
+        itemCount
+      };
+    }));
+
+    res.json({ success: true, profiles: exploreProfiles });
+  } catch (err) {
+    console.error('[Explore] Error:', err);
+    res.status(500).json({ error: 'Keşfet profilleri alınamadı.' });
+  }
+});
+
+app.get('/api/users/explore/:userId/wardrobe', authenticateToken, async (req: any, res) => {
+  try {
+    const targetUserId = req.params.userId;
+    const targetUser = await UserModel.findOne({ _id: targetUserId } as any);
+    if (!targetUser) {
+      return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+    }
+
+    if ((targetUser as any).isPrivate) {
+      return res.status(403).json({ error: 'Bu profil gizlidir ve gardırobuna erişilemez.' });
+    }
+
+    const items = await ItemModel.find({ userId: targetUserId } as any).limit(200).sort({ _id: -1 } as any);
+
+    res.json({
+      success: true,
+      user: {
+        id: targetUser._id.toString(),
+        name: targetUser.name,
+        username: (targetUser as any).username,
+      },
+      items
+    });
+  } catch (err) {
+    console.error('[Explore Wardrobe] Error:', err);
+    res.status(500).json({ error: 'Gardırop verileri alınamadı.' });
+  }
+});
+
 // ─── Routes ───────────────────────────────────────────────────────────────
-app.get('/api/wardrobe', async (req, res) => {
+app.get('/api/wardrobe', authenticateToken, async (req: any, res) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 50;
     const skip = (page - 1) * limit;
 
-    const total = await ItemModel.countDocuments();
-    const items = await ItemModel.find().skip(skip).limit(limit).sort({ _id: -1 });
+    const total = await ItemModel.countDocuments({ userId: req.user.id } as any);
+    const items = await ItemModel.find({ userId: req.user.id } as any).skip(skip).limit(limit).sort({ _id: -1 } as any);
 
     res.json({ 
       items,
@@ -268,13 +667,13 @@ app.get('/api/wardrobe', async (req, res) => {
 
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
-app.post('/api/wardrobe/scan', async (_req, res) => {
+app.post('/api/wardrobe/scan', authenticateToken, async (_req, res) => {
   res.json({ success: true, added: 0, message: 'Tarama artık desteklenmiyor (Bulut tabanlı)' });
 });
 
-app.post('/api/wardrobe/enrich', async (req, res) => {
+app.post('/api/wardrobe/enrich', authenticateToken, async (req: any, res) => {
   try {
-    const items = await ItemModel.find();
+    const items = await ItemModel.find({ userId: req.user.id } as any);
 
     // Üst/alt/dış giyimde desen ve kesim de eksik sayılır
     const isIncomplete = (item: any) => {
@@ -330,7 +729,7 @@ app.post('/api/wardrobe/enrich', async (req, res) => {
   }
 });
 
-app.post('/api/analyze-image-base64', async (req, res) => {
+app.post('/api/analyze-image-base64', authenticateToken, async (req, res) => {
   try {
     const { base64, mimeType } = req.body;
     if (!base64 || !mimeType) return res.status(400).json({ error: 'base64 ve mimeType gerekli' });
@@ -342,9 +741,13 @@ app.post('/api/analyze-image-base64', async (req, res) => {
   }
 });
 
-app.post('/api/generate-outfit', async (req, res) => {
+app.post('/api/generate-outfit', authenticateToken, async (req: any, res) => {
   try {
-    const { items, request } = req.body;
+    const { request } = req.body;
+    
+    // Yüksek Performans: İstemciden büyük gardırop dizisini göndermek yerine doğrudan MongoDB'den tümünü çekiyoruz.
+    // Bu sayede AI, kullanıcının gardırobundaki tüm parçalara (sayfalama sınırına takılmadan) erişebilir.
+    const items = await ItemModel.find({ userId: req.user.id } as any);
     
     // Veri temizliği (Payload Sanitization) - Gereksiz özellikleri (imagePath, db meta vs) çıkararak token tasarrufu sağlarız
     const sanitizedItems = items.map((i: any) => ({
@@ -423,9 +826,9 @@ ${JSON.stringify(sanitizedItems)}`;
   }
 });
 
-app.post('/api/wardrobe/upload', upload.single('image'), async (req, res) => {
+app.post('/api/wardrobe/upload', authenticateToken, upload.single('image'), async (req: any, res) => {
   try {
-    const file = (req as any).file;
+    const file = req.file;
     if (!file) return res.status(400).json({ error: 'Dosya eksik' });
 
     // multer-storage-cloudinary gives us req.file.path (Cloudinary URL)
@@ -443,6 +846,7 @@ app.post('/api/wardrobe/upload', upload.single('image'), async (req, res) => {
 
     const newItem = new ItemModel({
       id: `item_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      userId: req.user.id, // Eklendi!
       name:         itemData.name        || analysis?.name        || file.originalname,
       category:     itemData.category    || analysis?.category    || 'top',
       subCategory:  itemData.subCategory || analysis?.subCategory || '',
@@ -466,21 +870,37 @@ app.post('/api/wardrobe/upload', upload.single('image'), async (req, res) => {
   }
 });
 
-// Bu rota silindi çünkü yukarıya taşındı
-
-app.delete('/api/wardrobe/:id', async (req, res) => {
+app.delete('/api/wardrobe/:id', authenticateToken, async (req: any, res) => {
   try {
-    await ItemModel.deleteOne({ id: req.params.id });
+    const item = await ItemModel.findOne({ id: req.params.id, userId: req.user.id } as any);
+    if (!item) {
+      return res.status(404).json({ error: 'Öğe bulunamadı' });
+    }
+
+    // Cloudinary'den görseli sil
+    if (item.imagePath) {
+      const publicId = getPublicIdFromUrl(item.imagePath);
+      if (publicId) {
+        console.log(`[Cloudinary] Görsel siliniyor: ${publicId}`);
+        await cloudinary.uploader.destroy(publicId);
+      }
+    }
+
+    await ItemModel.deleteOne({ id: req.params.id, userId: req.user.id } as any);
     res.json({ success: true });
-  } catch {
+  } catch (err) {
+    console.error('[Delete] Hata:', err);
     res.status(500).json({ error: 'Silme başarısız' });
   }
 });
 
-app.put('/api/wardrobe/:id', async (req, res) => {
+app.put('/api/wardrobe/:id', authenticateToken, async (req: any, res) => {
   try {
-    // TS hatasını önlemek için query kısmına "as any" ekledik
-    const updated = await ItemModel.findOneAndUpdate({ id: req.params.id } as any, req.body, { new: true } as any);
+    const updated = await ItemModel.findOneAndUpdate(
+      { id: req.params.id, userId: req.user.id } as any,
+      req.body,
+      { new: true } as any
+    );
     if (!updated) return res.status(404).json({ error: 'Bulunamadı' });
     res.json({ success: true, item: updated });
   } catch {
@@ -488,19 +908,20 @@ app.put('/api/wardrobe/:id', async (req, res) => {
   }
 });
 
-app.get('/api/outfits', async (req, res) => {
+app.get('/api/outfits', authenticateToken, async (req: any, res) => {
   try {
-    const outfits = await OutfitModel.find().sort({ createdAt: -1 });
+    const outfits = await OutfitModel.find({ userId: req.user.id } as any).sort({ createdAt: -1 } as any);
     res.json({ outfits });
   } catch (err) {
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
-app.post('/api/outfits', async (req, res) => {
+app.post('/api/outfits', authenticateToken, async (req: any, res) => {
   try {
     const newOutfit = new OutfitModel({
       id: `outfit_${Date.now()}`,
+      userId: req.user.id, // Eklendi!
       name: req.body.name || 'Yeni Kombin',
       items: req.body.items || [],
       stylingReason: req.body.stylingReason || '',
@@ -514,18 +935,22 @@ app.post('/api/outfits', async (req, res) => {
   }
 });
 
-app.delete('/api/outfits/:id', async (req, res) => {
+app.delete('/api/outfits/:id', authenticateToken, async (req: any, res) => {
   try {
-    await OutfitModel.deleteOne({ id: req.params.id });
+    await OutfitModel.deleteOne({ id: req.params.id, userId: req.user.id } as any);
     res.json({ success: true });
   } catch {
     res.status(500).json({ error: 'Silme başarısız' });
   }
 });
 
-app.put('/api/outfits/:id', async (req, res) => {
+app.put('/api/outfits/:id', authenticateToken, async (req: any, res) => {
   try {
-    const updated = await OutfitModel.findOneAndUpdate({ id: req.params.id } as any, req.body, { new: true } as any);
+    const updated = await OutfitModel.findOneAndUpdate(
+      { id: req.params.id, userId: req.user.id } as any,
+      req.body,
+      { new: true } as any
+    );
     if (!updated) return res.status(404).json({ error: 'Bulunamadı' });
     res.json({ success: true, outfit: updated });
   } catch {

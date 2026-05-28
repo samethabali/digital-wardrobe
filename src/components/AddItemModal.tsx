@@ -88,8 +88,14 @@ export default function AddItemModal({ onClose, onAdded, onNotify }: Props) {
       formData.append('image', file);
       formData.append('itemData', JSON.stringify(form));
       formData.append('autoAnalyze', 'false');
-
-      const res = await fetch('/api/wardrobe/upload', { method: 'POST', body: formData });
+      const token = localStorage.getItem('aura_token');
+      const res = await fetch('/api/wardrobe/upload', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        body: formData
+      });
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.error || 'Yükleme başarısız');
