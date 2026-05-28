@@ -78,7 +78,7 @@ export function WardrobeProvider({ children }: { children: ReactNode }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [token]);
 
   const handleDeleteItem = async (id: string) => {
     const ok = await askConfirm('Silmeyi Onayla', 'Bu kıyafeti silmek istediğinize emin misiniz? (Bu işlem geri alınamaz)');
