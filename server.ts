@@ -762,6 +762,9 @@ app.post('/api/generate-outfit', authenticateToken, async (req: any, res) => {
       weatherMatch: i.weatherMatch
     }));
 
+    // Çözüm A: Sıralama eğilimini (Primacy Bias) kırmak için gardırop listesini rastgele karıştırıyoruz
+    const shuffledItems = [...sanitizedItems].sort(() => Math.random() - 0.5);
+
     let liveWeatherStr = 'Dikkate alınacak (Önemsiz değil, ancak canlı veri alınamadı)';
     if (!request.ignoreWeather && request.location) {
       const liveWeather = await getWeatherForLocation(request.location);
@@ -785,7 +788,8 @@ KURALLAR:
    - ÖNEMLİ: Zorunlu parçaların kategorilerini analiz et. Eğer kullanıcı zorunlu olarak bir "top" seçmişse, sen ikinci bir "top" SEÇME (katmanlama yapmıyorsan).
 5. AÇIKLAMA KALİTESİ (stylingReason):
    - Neden bu parçaları seçtiğini, kullanıcının kişisel stil kimliğine, efor seviyesine ve hava durumuna nasıl uyduğunu profesyonel, ilham verici ve zarif bir Türkçe ile açıkla (2-3 cümle).
-6. MUTLAKA belirtilen JSON şemasında yanıt ver.`;
+6. MUTLAKA belirtilen JSON şemasında yanıt ver.
+7. ÇEŞİTLİLİK VE YARATICILIK: Her zaman aynı/benzer kombinleri önermek yerine, gardıroptaki farklı ve birbiriyle uyumlu olabilecek parçaları keşfet. Tekdüzeliği kır, yaratıcı ol!`;
 
     const userPrompt = `KONUM: ${request.location}
 ETKİNLİK: ${request.event}
@@ -796,7 +800,7 @@ KİŞİSEL BAĞLAM/STİL KİMLİĞİ: ${request.personalContext || 'Belirtilmedi
 HAVA DURUMU: ${request.ignoreWeather ? 'Önemsiz (Kapalı mekan)' : liveWeatherStr}
 ${request.requiredItems?.length ? `ZORUNLU PARÇALAR (Kesinlikle Kullan): ${request.requiredItems.join(', ')}\n` : ''}${request.excludedItems?.length ? `YASAKLI PARÇALAR (Kesinlikle Kullanma): ${request.excludedItems.join(', ')}\n` : ''}
 GARDIROP LİSTESİ (JSON):
-${JSON.stringify(sanitizedItems)}`;
+${JSON.stringify(shuffledItems)}`;
 
     const response = await executeWithFallback(async (modelName) => {
       return await ai.models.generateContent({
@@ -804,6 +808,7 @@ ${JSON.stringify(sanitizedItems)}`;
         contents: userPrompt,
         config: {
           systemInstruction: systemInstruction,
+          temperature: 0.75, // Çözüm A: Yaratıcılık ve çeşitlilik için sıcaklığı artırdık (varsayılan düşük/deterministikti)
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
