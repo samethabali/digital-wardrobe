@@ -197,12 +197,31 @@ async function runMigration() {
   }
 }
 
-mongoose.connect(process.env.MONGODB_URI || '')
-  .then(() => {
-    console.log('[MongoDB] Bağlantı başarılı.');
-    runMigration();
-  })
-  .catch(err => console.error('[MongoDB] Bağlantı hatası:', err));
+let cachedConnection: typeof mongoose | null = null;
+
+async function connectToDatabase() {
+  if (cachedConnection && mongoose.connection.readyState === 1) {
+    return cachedConnection;
+  }
+
+  const uri = process.env.MONGODB_URI || '';
+  if (!uri) {
+    throw new Error('MONGODB_URI tanımlı değil.');
+  }
+
+  // Serverless için bağlantıyı önbelleğe al
+  cachedConnection = await mongoose.connect(uri);
+  console.log('[MongoDB] Yeni bağlantı başarıyla kuruldu.');
+  
+  // İlk bağlantıda veritabanı göçünü (migration) arka planda asenkron çalıştır
+  runMigration();
+  
+  return cachedConnection;
+}
+
+// Sunucu ilk başladığında asenkron olarak bağlantıyı tetikle (Localhost hızlandırması için)
+connectToDatabase().catch(err => console.error('[MongoDB] İlk bağlantı hatası:', err));
+
 
 // ─── Gemini Vision: Görsel Analizi ────────────────────────────────────────
 async function analyzeImageData(base64: string, mimeType: string) {
@@ -308,18 +327,38 @@ const allowedOrigins = [
 app.use(cors({
   origin: function(origin, callback) {
     const isVercel = origin && origin.endsWith('.vercel.app');
-    const isLocalIp = origin && (origin.startsWith('http://192.168.') || origin.startsWith('exp://192.168.'));
+    
+    // Genişletilmiş Mobil Ağ Geçitleri (Local IPs: 192.168.x.x, 172.x.x.x, 10.x.x.x)
+    const isLocalIp = origin && (
+      origin.startsWith('http://192.168.') || origin.startsWith('exp://192.168.') ||
+      origin.startsWith('http://172.') || origin.startsWith('exp://172.') ||
+      origin.startsWith('http://10.') || origin.startsWith('exp://10.')
+    );
     
     if (!origin || allowedOrigins.includes(origin) || isVercel || isLocalIp) {
       callback(null, true);
     } else {
-      console.error(`[CORS] Engellenen origin: ${origin}`);
-      callback(new Error('CORS kısıtlaması nedeniyle engellendi.'));
+      console.warn(`[CORS] Engellenen origin: ${origin}`);
+      // callback(new Error(...)) Express'i 500 ile çökerttiği için, null ve false dönerek
+      // Express'in çökmesini engelliyoruz. İstemci doğal olarak CORS kuralı gereği engellenecektir.
+      callback(null, false);
     }
   }
 }));
 
 app.use(express.json({ limit: '20mb' })); // Mobil kamera fotoğrafları base64'te ~10-15 MB olabilir
+
+// Her API isteğinde veritabanı bağlantisini garantileyen Serverless-Uyumlu Middleware
+app.use(async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    next();
+  } catch (err) {
+    console.error('[MongoDB Middleware] Bağlantı kurulamadı:', err);
+    res.status(500).json({ error: 'Veritabanı bağlantısı kurulamadı. Lütfen daha sonra tekrar deneyin.' });
+  }
+});
+
 app.use((req, res, next) => { console.log(`[Server] ${req.method} ${req.url}`); next(); });
 
 // Authentication Middleware
@@ -383,17 +422,26 @@ app.get('/api/debug-models', async (req, res) => {
 // ─── AUTH ENDPOINTS ──────────────────────────────────────────────────────────
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { email, password, name, username } = req.body;
+    let { email, password, name, username } = req.body;
     if (!email || !password || !name || !username) {
       return res.status(400).json({ error: 'Lütfen tüm alanları doldurun.' });
     }
 
-    const cleanUsername = username.trim().toLowerCase().replace(/\s+/g, '');
+    // Mobil klavye/otomatik düzeltme kaynaklı görünmez boşlukların ve karakterlerin temizliği
+    email = String(email).trim().toLowerCase();
+    password = String(password).trim();
+    name = String(name).trim();
+    const cleanUsername = String(username).trim().toLowerCase().replace(/\s+/g, '');
+
+    if (!email || !password || !name || !cleanUsername) {
+      return res.status(400).json({ error: 'Lütfen tüm alanları geçerli değerlerle doldurun.' });
+    }
+
     if (cleanUsername.length < 3) {
       return res.status(400).json({ error: 'Kullanıcı adı en az 3 karakter olmalıdır.' });
     }
 
-    const existingUser = await UserModel.findOne({ email: email.toLowerCase() } as any);
+    const existingUser = await UserModel.findOne({ email } as any);
     if (existingUser) {
       return res.status(400).json({ error: 'Bu e-posta adresi zaten kullanımda.' });
     }
@@ -439,12 +487,20 @@ app.post('/api/auth/register', async (req, res) => {
 
 app.post('/api/auth/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    let { email, password } = req.body;
     if (!email || !password) {
       return res.status(400).json({ error: 'E-posta ve şifre gereklidir.' });
     }
 
-    const user = await UserModel.findOne({ email: email.toLowerCase() } as any);
+    // Mobil klavye/otomatik düzeltme kaynaklı görünmez boşlukların ve karakterlerin temizliği
+    email = String(email).trim().toLowerCase();
+    password = String(password).trim();
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'E-posta ve şifre boş bırakılamaz.' });
+    }
+
+    const user = await UserModel.findOne({ email } as any);
     if (!user) {
       return res.status(401).json({ error: 'Hatalı e-posta veya şifre.' });
     }
