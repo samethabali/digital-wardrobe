@@ -11,6 +11,7 @@ import { CloudinaryStorage } from 'multer-storage-cloudinary';
 import { GoogleGenAI, Type } from '@google/genai';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { getRelevantFashionRules } from './fashionRules.js';
 
 dotenv.config();
 
@@ -797,6 +798,94 @@ app.post('/api/analyze-image-base64', authenticateToken, async (req, res) => {
   }
 });
 
+app.get('/api/capsule-analysis', authenticateToken, async (req: any, res) => {
+  try {
+    const targetCategory = req.query.category as string || 'any';
+    const items = await ItemModel.find({ userId: req.user.id } as any);
+    
+    if (items.length < 5) {
+      return res.json({
+        insufficient: true,
+        message: 'Kapsül gardırop simülasyonu yapabilmek için dolabında en az 5 adet kıyafet bulunmalıdır. Lütfen biraz daha kıyafet ekle!'
+      });
+    }
+
+    const sanitizedItems = items.map((i: any) => ({
+      id: i.id,
+      category: i.category,
+      subCategory: i.subCategory,
+      color: i.color,
+      material: i.material,
+      style: i.style,
+      pattern: i.pattern,
+      fit: i.fit
+    }));
+
+    let categoryRestrictionInstruction = '';
+    if (targetCategory && targetCategory !== 'any') {
+      const categoryLabelsTR: Record<string, string> = {
+        top: 'Üst Giyim (top)',
+        bottom: 'Alt Giyim (bottom)',
+        outerwear: 'Dış Giyim (outerwear)',
+        shoes: 'Ayakkabı (shoes)',
+        accessory: 'Aksesuar (accessory)'
+      };
+      const labelTR = categoryLabelsTR[targetCategory] || targetCategory;
+      categoryRestrictionInstruction = `\nKESİNLİKLE UYULMASI GEREKEN KATEGORİ KISITI: Önerdiğin 'kilit eksik parça' (Suggested Item) KESİNLİKLE '${targetCategory}' (${labelTR}) kategorisinde olmak zorundadır. Başka hiçbir kategoriden kıyafet veya aksesuar öneremezsin. Kombin artış simülasyonunu da sadece bu kategoriye özel bir parçanın dolaba eklenmesi durumuna göre hesapla.`;
+    }
+
+    const systemInstruction = `Sen elit bir kapsül gardırop uzmanı, moda analisti ve kişisel stil danışmanısın.
+Görevin, kullanıcının gardırobundaki parçaları inceleyerek, dolabın potansiyelini katlayacak tek bir eksik anahtar parçayı (anchor item) bulmak ve bunun simülasyonunu yapmaktır.
+${categoryRestrictionInstruction}
+
+ANALİZ ADIMLARI:
+1. Gardırop listesini incele: Renk dağılımı nasıl (örn. çok fazla siyah mı var)? Hangi kategoride (üst, alt, ayakkabı, dış giyim) eksiklik veya dengesizlik var?
+2. Mevcut gardıroptaki parçalarla teorik olarak oluşturulabilecek maksimum uyumlu kombin sayısını tahmin et (Örn: 12).
+3. Dolaba eklendiğinde **kombinasyon potansiyelini maksimuma çıkaracak** tam 1 adet 'kilit eksik parça' (Suggested Item) belirle (Örn: "Bej Blazer Ceket", "Siyah Trençkot", "Beyaz Deri Sneaker"). Bu parça mevcut parçalarla en çok renk ve stil uyumu yakalayacak çok yönlü bir parça olmalıdır. (Kategori kısıtına KESİNLİKLE uymalısın!)
+4. Bu kilit parça eklendikten sonra oluşacak yeni toplam kombin potansiyelini hesapla (Örn: 34). Bu sayı mevcut sayının en az 2 katı civarında ve gerçekçi olmalıdır.
+5. Bu parçanın neden seçildiğini, dolaptaki hangi parçaları canlandıracağını ve nasıl kombinleneceğini profesyonel, motive edici ve elit bir Türkçe ile açıkla (3-4 cümle).
+6. MUTLAKA belirtilen JSON şemasında yanıt ver. Sayısal alanlar KESİNLİKLE tam sayı (INTEGER) olmalıdır.`;
+
+    const userPrompt = `KONUM / HEDEF KATEGORİ: ${targetCategory}
+GARDIROP LİSTESİ (JSON):
+${JSON.stringify(sanitizedItems)}`;
+
+    const response = await executeWithFallback(async (modelName) => {
+      return await ai.models.generateContent({
+        model: modelName,
+        contents: userPrompt,
+        config: {
+          systemInstruction: systemInstruction,
+          temperature: 0.7,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              currentOutfitCount:  { type: Type.INTEGER },
+              projectedOutfitCount: { type: Type.INTEGER },
+              suggestedItem: {
+                type: Type.OBJECT,
+                properties: {
+                  name:     { type: Type.STRING },
+                  category: { type: Type.STRING },
+                  reason:   { type: Type.STRING }
+                },
+                required: ['name', 'category', 'reason']
+              }
+            },
+            required: ['currentOutfitCount', 'projectedOutfitCount', 'suggestedItem']
+          }
+        }
+      });
+    });
+
+    res.json(JSON.parse(response.text));
+  } catch (err: any) {
+    console.error('[Server] Capsule Analysis Error:', err);
+    res.status(500).json({ error: 'Kapsül gardırop analizi oluşturulamadı', details: err instanceof Error ? err.message : 'Unknown' });
+  }
+});
+
 app.post('/api/generate-outfit', authenticateToken, async (req: any, res) => {
   try {
     const { request } = req.body;
@@ -827,25 +916,51 @@ app.post('/api/generate-outfit', authenticateToken, async (req: any, res) => {
       if (liveWeather) liveWeatherStr = `CANLI VERİ: ${liveWeather}`;
     }
 
-    const systemInstruction = `Sen elit bir moda tasarımcısı ve kişisel stil danışmanısın.
-Görevin, kullanıcının gardırobundaki parçaları kullanarak, verilen etkinlik, hava durumu ve kişisel stil bağlamına en uygun, estetik olarak kusursuz bir kombin oluşturmaktır.
+    // ─── RAG Moda Bilgi Bankasından Kuralları Çekme ────────────────────────────
+    const matchedRules = getRelevantFashionRules(request, liveWeatherStr);
+    const fashionRulesString = matchedRules.map((rule, idx) => `${idx + 1}. ${rule}`).join('\n');
+
+    // ─── Tekrarlamayı Kırmak İçin Yaratıcı Açı (Creative Seed) Seçimi ─────────
+    const creativeAngles = [
+      "doku kontrastlarını ön plana çıkarmak (örn. deri ceket ile pürüzsüz saten veya yün triko ile keten eşleşmesi)",
+      "cesur ama dengeli renk kontrastları (renk bloklama - color blocking) oluşturmak",
+      "minimalist, çabasız ve son derece prestijli bir şıklık yakalamak",
+      "monokromatik veya ton-sür-ton geçişlerle göz alıcı bir dikey derinlik sunmak",
+      "ayakkabılar veya aksesuarlar aracılığıyla patlayıcı ve zengin bir vurgu (accent color) rengi eklemek",
+      "vücut proporsiyonunu 1/3 üst, 2/3 alt giyim şeklinde göstererek bacak boyunu uzatmak",
+      "klasik çizgilerin sportif ve konforlu dokunuşlarla dinamik harmanını (Smart Casual) yansıtmak"
+    ];
+    const selectedAngle = creativeAngles[Math.floor(Math.random() * creativeAngles.length)];
+
+    const systemInstruction = `Sen elit bir moda tasarımcısı, haute couture stilist ve kişisel stil danışmanısın.
+Görevin, kullanıcının gardırobundaki parçaları kullanarak, verilen etkinlik, hava durumu ve stil bağlamına en uygun, estetik olarak kusursuz bir kombin oluşturmaktır.
 
 KURALLAR:
 1. Yalnızca verilen GARDIROP LİSTESİ'ndeki parçaları (ID'lerine göre) kullanabilirsin. Asla listede olmayan bir eşya uydurma.
 2. KATMANLAMA VE KATEGORİ MANTIĞI:
-   - Standart bir kombin için 1 Üst (top) + 1 Alt (bottom) + 1 Ayakkabı (shoes) gereklidir.
-   - ÖZEL DURUM 1 (Elbise/Tulum): Eğer seçtiğin parça tek parça bir giysi (elbise, tulum vb.) ise, bu hem üst hem alt yerine geçer. Kombine fazladan bir "bottom" veya "top" EKLEME.
-   - ÖZEL DURUM 2 (Dış Giyim / Outerwear): Canlı hava durumu soğuk, rüzgarlı veya yağmurluysa, veya stil katmanlama gerektiriyorsa KESİNLİKLE uygun bir "outerwear" (dış giyim, kaban, mont, ceket) ekle.
-   - Opsiyonel olarak uygun "accessory" ve "makeup" parçaları ekleyebilirsin.
+   - Standart bir kombin KESİNLİKLE 1 Üst (top) + 1 Alt (bottom) + 1 Ayakkabı (shoes) gerektirir. Üst (top) veya Alt (bottom) parçalarından birini eksik bırakmak KESİNLİKLE yasaktır.
+   - ÖZEL DURUM 1 (Elbise/Tulum): Eğer seçtiğin parça tek parça bir giysi (category = 'top' veya 'bottom' olup subCategory 'elbise', 'tulum' vb. ise), bu parça hem üst hem alt yerine geçer. Bu durumda kombine fazladan bir "bottom" veya "top" EKLEME.
+   - ÖZEL DURUM 2 (Dış Giyim / Outerwear): Canlı hava durumu soğuk, rüzgarlı veya yağmurluysa, veya stil katmanlama gerektiriyorsa KESİNLİKLE uygun bir "outerwear" (dış giyim, kaban, mont, ceket, hırka) ekle.
+   - Kombine opsiyonel olarak uygun "accessory" ve "makeup" parçaları ekleyebilirsin.
 3. HAVA DURUMU UYUMU:
    - Canlı hava durumunu KESİNLİKLE dikkate al. Parçaların "weatherMatch" etiketleriyle hava koşullarını eşleştir.
-4. KİLİTLİ/ZORUNLU PARÇALAR (Required Items):
-   - Eğer kullanıcı zorunlu parçalar seçmişse, bunları kombine DAHİL ET.
-   - ÖNEMLİ: Zorunlu parçaların kategorilerini analiz et. Eğer kullanıcı zorunlu olarak bir "top" seçmişse, sen ikinci bir "top" SEÇME (katmanlama yapmıyorsan).
-5. AÇIKLAMA KALİTESİ (stylingReason):
-   - Neden bu parçaları seçtiğini, kullanıcının kişisel stil kimliğine, efor seviyesine ve hava durumuna nasıl uyduğunu profesyonel, ilham verici ve zarif bir Türkçe ile açıkla (2-3 cümle).
-6. MUTLAKA belirtilen JSON şemasında yanıt ver.
-7. ÇEŞİTLİLİK VE YARATICILIK: Her zaman aynı/benzer kombinleri önermek yerine, gardıroptaki farklı ve birbiriyle uyumlu olabilecek parçaları keşfet. Tekdüzeliği kır, yaratıcı ol!`;
+4. KİLİTLİ/ZORUNLU PARÇALAR (Required Items) VE DİNAMİK YENİLEME MANTIĞI:
+   - Eğer kullanıcı zorunlu parçalar seçmişse (requiredItems), bunları kombine KESİNLİKLE DAHİL ET.
+   - ÖNEMLİ TEKRAR ENGELİ: Eğer bazı parçalar kilitliyse (requiredItems), bu parçaları koru ancak kilitlenmeyen DİĞER parçaları KESİNLİKLE değiştirerek tamamen yeni ve farklı bir kombinasyona dönüştür. Kilitli parça dışındaki parçaların eski kombinle tamamen aynı kalması KESİNLİKLE kabul edilemez.
+5. YAKIN ZAMANDA ÖNERİLEN KOMBİNLERİN ENGELLENMESİ:
+   - 'YAKIN ZAMANDA ÖNERİLEN KOMBİNLER' başlığı altında listelenen ID gruplarının birebir aynısını KESİNLİKLE tekrar önerme. O ID setlerinin birebir aynısını seçmek KESİNLİKLE yasaktır. En az bir veya birkaç parçayı değiştirerek farklı ve yepyeni kombinasyonlar üret.
+6. AÇIKLAMA KALİTESİ VE ANALİZ (stylingReason):
+   - Neden bu parçaları seçtiğini, kullanıcının kişisel stil kimliğine ve hava durumuna nasıl uyduğunu açıkla. Açıklamanda KESİNLİKLE uyguladığın renk teorisini (örn. 60-30-10 kuralı, kontrast veya monokrom) ve silüet dengesini (örn. dar-bol kontrastı, tucked-in bacak boyu) profesyonel, ilham verici ve elit bir Türkçe ile açıkla (3-4 cümle).
+7. UYUMLULUK PUANI (compatibilityScore):
+   - 100 üzerinden bir TAM SAYI (INTEGER) olmalıdır (Örn: 85, 92, 98). Kesinlikle 1-10 arası ondalıklı puan (Örn: 9.5 veya 10.0) dönme, doğrudan 100 üzerinden yüzde oranı temsil eden bir tam sayı dön.
+8. DİNAMİK STİL ODAĞI: Kombini yaparken şu yaratıcı odağı / tasarımı özellikle temel al: "${selectedAngle}".
+9. MUTLAKA belirtilen JSON şemasında yanıt ver.`;
+
+    // Son kombinleri listeleme
+    let recentOutfitsStr = 'Yok';
+    if (request.recentOutfits && request.recentOutfits.length > 0) {
+      recentOutfitsStr = request.recentOutfits.map((ids: string[], idx: number) => `Kombin ${idx + 1}: [${ids.join(', ')}]`).join('\n');
+    }
 
     const userPrompt = `KONUM: ${request.location}
 ETKİNLİK: ${request.event}
@@ -855,6 +970,12 @@ KİŞİSEL BAĞLAM/STİL KİMLİĞİ: ${request.personalContext || 'Belirtilmedi
 ÖZEL STİL TERCİHLERİ: ${request.styleTags?.join(', ') || 'Belirtilmedi'}
 HAVA DURUMU: ${request.ignoreWeather ? 'Önemsiz (Kapalı mekan)' : liveWeatherStr}
 ${request.requiredItems?.length ? `ZORUNLU PARÇALAR (Kesinlikle Kullan): ${request.requiredItems.join(', ')}\n` : ''}${request.excludedItems?.length ? `YASAKLI PARÇALAR (Kesinlikle Kullanma): ${request.excludedItems.join(', ')}\n` : ''}
+YAKIN ZAMANDA ÖNERİLEN VE TEKRARLANMAMASI GEREKEN KOMBİNLER:
+${recentOutfitsStr}
+
+DİNAMİK MODA VE RENK KURALLARI (RAG):
+${fashionRulesString}
+
 GARDIROP LİSTESİ (JSON):
 ${JSON.stringify(shuffledItems)}`;
 
@@ -864,14 +985,14 @@ ${JSON.stringify(shuffledItems)}`;
         contents: userPrompt,
         config: {
           systemInstruction: systemInstruction,
-          temperature: 0.75, // Çözüm A: Yaratıcılık ve çeşitlilik için sıcaklığı artırdık (varsayılan düşük/deterministikti)
+          temperature: 0.85, // Yenilik ve yaratıcılık için sıcaklığı biraz daha artırdık
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
             properties: {
               selectedItems:     { type: Type.ARRAY, items: { type: Type.STRING } },
               stylingReason:     { type: Type.STRING },
-              compatibilityScore:{ type: Type.NUMBER }
+              compatibilityScore:{ type: Type.INTEGER } // Kesinlikle INTEGER olarak zorladık
             },
             required: ['selectedItems', 'stylingReason', 'compatibilityScore']
           }

@@ -52,5 +52,6 @@ export interface StylistRequest {
   personalContext?: string; // Global style identity from sidebar
   styleTags?: string[];     // Selected style tags from planner
   additionalFilters?: Record<string, any>;
+  recentOutfits?: string[][]; // Son 3 kombinin parça ID'leri (tekrar engelleme için)
 }
 

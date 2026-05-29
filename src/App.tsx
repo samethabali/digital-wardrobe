@@ -59,6 +59,7 @@ function Dashboard() {
   const [isResultVisible, setIsResultVisible] = React.useState(true);
   const [lastRequest, setLastRequest] = React.useState<StylistRequest | null>(null);
   const [lockedItems, setLockedItems] = React.useState<string[]>([]);
+  const [recentOutfitsHistory, setRecentOutfitsHistory] = React.useState<string[][]>([]);
   const [isSelectionMode, setIsSelectionMode] = React.useState(false);
   const [selectedForOutfit, setSelectedForOutfit] = React.useState<string[]>([]);
 
@@ -124,9 +125,24 @@ function Dashboard() {
     const controller = new AbortController();
     generateControllerRef.current = controller;
 
-    const fullRequest = {
+    // İstek parametrelerinin değişip değişmediğini kontrol et (yenilemelerde geçmişi koruruz, yeni aramalarda temizleriz)
+    const isRequestChanged = !!(lastRequest && (
+      lastRequest.location !== request.location ||
+      lastRequest.event !== request.event ||
+      lastRequest.mood !== request.mood ||
+      JSON.stringify(lastRequest.styleTags) !== JSON.stringify(request.styleTags)
+    ));
+
+    let currentHistory = recentOutfitsHistory;
+    if (isRequestChanged) {
+      currentHistory = [];
+      setRecentOutfitsHistory([]);
+    }
+
+    const fullRequest: StylistRequest = {
       ...request,
-      personalContext: personalContext.trim() || undefined
+      personalContext: personalContext.trim() || undefined,
+      recentOutfits: currentHistory
     };
 
     setLastRequest(fullRequest);
@@ -139,6 +155,17 @@ function Dashboard() {
       setGenerationStatus('Kombin detaylandırılıyor...');
       setResult(outfit);
       setIsResultVisible(true);
+
+      // Son üretilen kombinin parçalarını geçmişe ekle (tekrarlanmasını önlemek için)
+      if (outfit && outfit.selectedItems && outfit.selectedItems.length > 0) {
+        setRecentOutfitsHistory(prev => {
+          const base = isRequestChanged ? [] : prev;
+          const next = [...base, outfit.selectedItems];
+          if (next.length > 3) return next.slice(next.length - 3);
+          return next;
+        });
+      }
+
       setTimeout(() => {
         document.getElementById('result-section')?.scrollIntoView({ behavior: 'smooth' });
       }, 100);
