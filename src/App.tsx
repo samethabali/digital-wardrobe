@@ -14,10 +14,10 @@ import AddItemModal from './components/AddItemModal';
 import ItemDetailModal from './components/ItemDetailModal';
 import { useNotification } from './contexts/NotificationContext';
 import { useWardrobe } from './contexts/WardrobeContext';
-import { WardrobeItem, StylistRequest, SavedOutfit } from './types';
+import { WardrobeItem, StylistRequest, SavedOutfit, CollabResult, ExploreProfile } from './types';
 import { generateOutfit } from './services/stylistService';
 import { CATEGORY_LABELS } from './constants/wardrobe';
-import { Sparkles, Plus, RefreshCw, Wand2, CheckCircle2, Save, Trash2, Menu, X, Zap, AlertCircle, Fingerprint, ChevronDown, ChevronUp, Shirt, LayoutGrid, BarChart2, Lock, Unlock, Sun, Moon, Edit3, Eye, EyeOff, LogOut, User } from 'lucide-react';
+import { Sparkles, Plus, RefreshCw, Wand2, CheckCircle2, Save, Trash2, Menu, X, Zap, AlertCircle, Fingerprint, ChevronDown, ChevronUp, Shirt, LayoutGrid, BarChart2, Lock, Unlock, Sun, Moon, Edit3, Eye, EyeOff, LogOut, User, Users } from 'lucide-react';
 
 export default function App() {
   return (
@@ -62,6 +62,10 @@ function Dashboard() {
   const [recentOutfitsHistory, setRecentOutfitsHistory] = React.useState<string[][]>([]);
   const [isSelectionMode, setIsSelectionMode] = React.useState(false);
   const [selectedForOutfit, setSelectedForOutfit] = React.useState<string[]>([]);
+
+  // Collab State
+  const [collabInitUser, setCollabInitUser] = React.useState<ExploreProfile | null>(null);
+  const [collabResult, setCollabResult] = React.useState<(CollabResult & { friendName: string; friendItems: WardrobeItem[] }) | null>(null);
 
   // Koyu Mod (Dark Mode)
   const [darkMode, setDarkMode] = React.useState(() => {
@@ -250,6 +254,20 @@ function Dashboard() {
 
   const handleReroll = () => {
     if (lastRequest) handleGenerate(lastRequest);
+  };
+
+  const handleOpenCollabWith = (profile: ExploreProfile) => {
+    setCollabInitUser(profile);
+    setMobilePlannerOpen(true); // Mobilde planner'ı aç
+  };
+
+  const handleCollabResult = (res: CollabResult & { friendName: string; friendItems: WardrobeItem[] }) => {
+    setCollabResult(res);
+    setActiveTab('koleksiyon');
+    setMobilePlannerOpen(false);
+    setTimeout(() => {
+      document.getElementById('collab-result-section')?.scrollIntoView({ behavior: 'smooth' });
+    }, 100);
   };
 
   const handleEditOutfit = async (outfit: SavedOutfit) => {
@@ -601,6 +619,89 @@ function Dashboard() {
         <div className="flex-grow overflow-y-auto pr-1 md:pr-2 custom-scrollbar pb-20 md:pb-0">
           {activeTab === 'koleksiyon' ? (
             <>
+              {/* ─── Collab Sonuç Bölümü ─────────────────────────────────────────── */}
+              <AnimatePresence>
+                {collabResult && (
+                  <motion.section
+                    id="collab-result-section"
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    className="mb-8 bg-gradient-to-br from-fuchsia-50 to-indigo-50 dark:from-fuchsia-900/10 dark:to-indigo-900/10 border border-fuchsia-200 dark:border-fuchsia-500/20 rounded-3xl p-4 md:p-8 overflow-hidden"
+                  >
+                    {/* Başlık */}
+                    <div className="flex items-center justify-between mb-6">
+                      <div className="flex items-center gap-3">
+                        <div className="bg-gradient-to-br from-fuchsia-500 to-indigo-600 p-2 rounded-xl shadow-md">
+                          <Users className="w-5 h-5 text-white" />
+                        </div>
+                        <div>
+                          <h3 className="text-lg font-bold text-primary">Beraber Kombin</h3>
+                          <p className="text-xs text-text-secondary">{collabResult.styleHarmony}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="bg-secondary px-4 py-2 rounded-full border border-border-color">
+                          <span className="text-sm font-bold text-fuchsia-600 dark:text-fuchsia-400">%{collabResult.compatibilityScore} Uyum</span>
+                        </div>
+                        <button
+                          onClick={() => setCollabResult(null)}
+                          className="p-2 text-text-secondary hover:text-text-primary bg-secondary border border-border-color rounded-xl transition-colors"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* İki Sütun Kombin */}
+                    <div className="grid grid-cols-2 gap-4 md:gap-6 mb-6">
+                      {/* Senin Kombinin */}
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full bg-indigo-500" />
+                          <p className="text-xs font-bold text-text-secondary uppercase tracking-wider">Senin Kombinin</p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          {items.filter(i => collabResult.myOutfit.includes(i.id)).map(item => (
+                            <div key={item.id} className="bg-secondary p-2 rounded-xl border border-border-color shadow-sm group relative">
+                              <div className="aspect-square bg-primary rounded-lg mb-1.5 overflow-hidden">
+                                <img src={item.imagePath} alt={item.name} loading="lazy" decoding="async"
+                                  className="w-full h-full object-contain" onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                              </div>
+                              <p className="text-[9px] text-center text-text-secondary truncate">{item.name}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Arkadaşın Kombini */}
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full bg-fuchsia-500" />
+                          <p className="text-xs font-bold text-text-secondary uppercase tracking-wider truncate">{collabResult.friendName}</p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          {collabResult.friendItems.filter(i => collabResult.friendOutfit.includes(i.id)).map(item => (
+                            <div key={item.id} className="bg-secondary p-2 rounded-xl border border-border-color shadow-sm">
+                              <div className="aspect-square bg-primary rounded-lg mb-1.5 overflow-hidden">
+                                <img src={item.imagePath} alt={item.name} loading="lazy" decoding="async"
+                                  className="w-full h-full object-contain" onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                              </div>
+                              <p className="text-[9px] text-center text-text-secondary truncate">{item.name}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* AI Açıklaması */}
+                    <div className="bg-white/60 dark:bg-gray-800/30 backdrop-blur-sm p-5 rounded-2xl border border-fuchsia-100 dark:border-fuchsia-500/10">
+                      <p className="text-sm text-text-primary leading-relaxed italic">"{collabResult.collabReason}"</p>
+                    </div>
+                  </motion.section>
+                )}
+              </AnimatePresence>
+
               {/* AI Sonuç Bölümü */}
               <AnimatePresence>
                 {result && (
@@ -885,7 +986,7 @@ function Dashboard() {
           ) : activeTab === 'hesap' ? (
             <AccountSettings />
           ) : activeTab === 'kesfet' ? (
-            <Explore />
+            <Explore onOpenCollabWith={handleOpenCollabWith} />
           ) : (
             <StatsDashboard />
           )}
@@ -977,6 +1078,9 @@ function Dashboard() {
             isGenerating={isGenerating}
             generationStatus={generationStatus}
             onNotify={notify}
+            initialCollabUser={collabInitUser}
+            onClearCollabUser={() => setCollabInitUser(null)}
+            onCollabResult={handleCollabResult}
           />
         </div>
       </section>

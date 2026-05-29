@@ -55,3 +55,38 @@ export interface StylistRequest {
   recentOutfits?: string[][]; // Son 3 kombinin parça ID'leri (tekrar engelleme için)
 }
 
+// ─── Collab (Beraber Kombin) ────────────────────────────────────────────────
+
+export interface CollabResult {
+  collabId: string;
+  myOutfit: string[];        // Initiator'ın item ID'leri
+  friendOutfit: string[];    // Arkadaşın item ID'leri
+  compatibilityScore: number;
+  collabReason: string;      // AI açıklama metni
+  styleHarmony: string;      // Kısa stil etiketi (ör: "Renk Bloklaması")
+}
+
+export interface CollabSession {
+  id: string;
+  initiatorId: string;
+  initiatorName: string;
+  friendId: string;
+  friendName: string;
+  event: string;
+  myOutfit: string[];
+  friendOutfit: string[];
+  compatibilityScore: number;
+  collabReason: string;
+  styleHarmony: string;
+  seenByFriend: boolean;
+  createdAt: string;
+}
+
+export interface ExploreProfile {
+  id: string;
+  name: string;
+  username: string;
+  createdAt: string;
+  itemCount: number;
+}
+

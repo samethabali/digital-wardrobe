@@ -135,6 +135,25 @@ const OutfitSchema = new mongoose.Schema({
 });
 const OutfitModel = mongoose.models.Outfit || mongoose.model('Outfit', OutfitSchema);
 
+const CollabSessionSchema = new mongoose.Schema({
+  id: { type: String, unique: true, index: true },
+  initiatorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
+  initiatorName: String,
+  friendId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
+  friendName: String,
+  event: String,
+  effort: Number,
+  mood: String,
+  myOutfit: [String],
+  friendOutfit: [String],
+  compatibilityScore: Number,
+  collabReason: String,
+  styleHarmony: String,
+  seenByFriend: { type: Boolean, default: false },
+  createdAt: { type: Date, default: Date.now }
+});
+const CollabSessionModel = mongoose.models.CollabSession || mongoose.model('CollabSession', CollabSessionSchema);
+
 // JWT Secret
 const JWT_SECRET = process.env.JWT_SECRET || 'aura_secret_key_123_change_me';
 
@@ -697,6 +716,239 @@ app.get('/api/users/explore/:userId/wardrobe', authenticateToken, async (req: an
   } catch (err) {
     console.error('[Explore Wardrobe] Error:', err);
     res.status(500).json({ error: 'Gardırop verileri alınamadı.' });
+  }
+});
+
+// ─── COLLAB (BERABER KOMBİN) ENDPOINTS ─────────────────────────────────────
+
+// POST /api/collab/generate — İki gardırobu AI ile eşleştirip collab session oluştur
+app.post('/api/collab/generate', authenticateToken, async (req: any, res) => {
+  try {
+    const { friendUserId, event, effort, mood, ignoreWeather, location } = req.body;
+    if (!friendUserId) return res.status(400).json({ error: 'Arkadaş ID\'si gereklidir.' });
+
+    // Arkadaşın profilini kontrol et
+    const friendUser = await UserModel.findOne({ _id: friendUserId } as any);
+    if (!friendUser) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+    if ((friendUser as any).isPrivate) {
+      return res.status(403).json({ error: 'Bu kullanıcının profili gizlidir.' });
+    }
+
+    // Kendi gardırobunu çek
+    const myItems = await ItemModel.find({ userId: req.user.id } as any);
+    if (myItems.length < 3) {
+      return res.status(400).json({ error: 'Beraber kombin için en az 3 kıyafete ihtiyaç var. Lütfen gardırobuna parça ekle.' });
+    }
+
+    // Arkadaşın gardırobunu çek
+    const friendItems = await ItemModel.find({ userId: friendUserId } as any);
+    if (friendItems.length < 3) {
+      return res.status(400).json({ error: 'Arkadaşının gardırobunda yeterli kıyafet yok (en az 3 gerekli).' });
+    }
+
+    // Hava durumu (opsiyonel)
+    let liveWeatherStr = 'Dikkate alınacak (canlı veri alınamadı)';
+    if (!ignoreWeather && location) {
+      const liveWeather = await getWeatherForLocation(location);
+      if (liveWeather) liveWeatherStr = `CANLI VERİ: ${liveWeather}`;
+    }
+
+    // Veri temizliği
+    const sanitize = (items: any[], owner: 'me' | 'friend') =>
+      items.map((i: any) => ({
+        owner,
+        id: i.id,
+        category: i.category,
+        subCategory: i.subCategory,
+        color: i.color,
+        material: i.material,
+        style: i.style,
+        pattern: i.pattern,
+        fit: i.fit,
+        weatherMatch: i.weatherMatch
+      }));
+
+    const allItems = [
+      ...sanitize(myItems, 'me'),
+      ...sanitize(friendItems, 'friend')
+    ].sort(() => Math.random() - 0.5);
+
+    const systemInstruction = `Sen elit bir moda stilisti ve çift stil danışmanısın. İki farklı kişinin gardırop parçalarından, birbirleriyle beraber çıkacakları bir etkinlik için AYRI AYRI uyumlu kombinler oluşturmak senin görevin.
+
+KURALLAR:
+1. Her gardırop listesinde 'owner' alanı 'me' olanlar birinci kişiye, 'friend' olanlar ikinci kişiye aittir.
+2. 'myOutfit' dizisi: SADECE owner='me' olan parçaların ID'lerini içerir.
+3. 'friendOutfit' dizisi: SADECE owner='friend' olan parçaların ID'lerini içerir.
+4. Her iki kombin de kendi içinde eksiksiz olmalı (üst + alt + ayakkabı minimum).
+5. İKİ KOMBİN BİRBİRİYLE RENK VE STİL AÇISINDAN UYUMLU OLMALI. Bu en kritik kuraldır.
+6. 'styleHarmony': İki kombini bir araya getiren stil/renk prensibini kısa ve etkileyici bir cümleyle özetle (Örn: 'Monokromatik Siyah Sinerji', 'Tonal Bej Uyumu', 'Bold Renk Bloklaması').
+7. 'collabReason': Her iki kombinin neden uyumlu göründüğünü, kullandığın renk teorisini ve stil prensiplerini profesyonel, ilham verici Türkçe ile açıkla (3-4 cümle).
+8. 'compatibilityScore': İki kombinin birbirleriyle uyumunu 100 üzerinden tam sayı olarak puan ver.
+9. MUTLAKA belirtilen JSON şemasında yanıt ver.`;
+
+    const userPrompt = `ETKİNLİK: ${event || 'Gündelik'}
+EFOR SEVİYESİ: ${effort || 5}/10
+RUH HALİ: ${mood || 'Rahat'}
+HAVA DURUMU: ${ignoreWeather ? 'Önemsiz (Kapalı mekan)' : liveWeatherStr}
+
+BİRİNCİ KİŞİ (me): ${req.user.name}
+İKİNCİ KİŞİ (friend): ${(friendUser as any).name}
+
+TÜM PARÇALAR (owner alanına dikkat et):
+${JSON.stringify(allItems)}`;
+
+    const response = await executeWithFallback(async (modelName) => {
+      return await ai.models.generateContent({
+        model: modelName,
+        contents: userPrompt,
+        config: {
+          systemInstruction,
+          temperature: 0.8,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              myOutfit:           { type: Type.ARRAY, items: { type: Type.STRING } },
+              friendOutfit:       { type: Type.ARRAY, items: { type: Type.STRING } },
+              compatibilityScore: { type: Type.INTEGER },
+              collabReason:       { type: Type.STRING },
+              styleHarmony:       { type: Type.STRING }
+            },
+            required: ['myOutfit', 'friendOutfit', 'compatibilityScore', 'collabReason', 'styleHarmony']
+          }
+        }
+      });
+    });
+
+    const aiResult = JSON.parse(response.text);
+
+    // MongoDB'ye kaydet
+    const collabId = `collab_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const session = new CollabSessionModel({
+      id: collabId,
+      initiatorId: req.user.id,
+      initiatorName: req.user.name,
+      friendId: friendUserId,
+      friendName: (friendUser as any).name,
+      event: event || 'Gündelik',
+      effort: effort || 5,
+      mood: mood || 'Rahat',
+      myOutfit: aiResult.myOutfit,
+      friendOutfit: aiResult.friendOutfit,
+      compatibilityScore: aiResult.compatibilityScore,
+      collabReason: aiResult.collabReason,
+      styleHarmony: aiResult.styleHarmony,
+      seenByFriend: false,
+      createdAt: new Date()
+    });
+    await session.save();
+
+    console.log(`[Collab] ${req.user.name} + ${(friendUser as any).name} → ${collabId} (Uyum: %${aiResult.compatibilityScore})`);
+
+    res.json({
+      success: true,
+      collabId,
+      myOutfit: aiResult.myOutfit,
+      friendOutfit: aiResult.friendOutfit,
+      compatibilityScore: aiResult.compatibilityScore,
+      collabReason: aiResult.collabReason,
+      styleHarmony: aiResult.styleHarmony,
+      friendName: (friendUser as any).name,
+      initiatorName: req.user.name
+    });
+  } catch (err: any) {
+    console.error('[Collab Generate] Hata:', err);
+    res.status(500).json({ error: 'Beraber kombin oluşturulamadı.', details: err instanceof Error ? err.message : 'Unknown' });
+  }
+});
+
+// GET /api/collab/inbox — Gelen collab bildirimleri (arkadaş tarafı)
+app.get('/api/collab/inbox', authenticateToken, async (req: any, res) => {
+  try {
+    const sessions = await CollabSessionModel.find({ friendId: req.user.id } as any)
+      .sort({ createdAt: -1 } as any)
+      .limit(20);
+
+    const unreadCount = sessions.filter((s: any) => !s.seenByFriend).length;
+
+    res.json({
+      success: true,
+      sessions: sessions.map((s: any) => ({
+        id: s.id,
+        initiatorId: s.initiatorId?.toString(),
+        initiatorName: s.initiatorName,
+        friendId: s.friendId?.toString(),
+        friendName: s.friendName,
+        event: s.event,
+        effort: s.effort,
+        mood: s.mood,
+        myOutfit: s.myOutfit,
+        friendOutfit: s.friendOutfit,
+        compatibilityScore: s.compatibilityScore,
+        collabReason: s.collabReason,
+        styleHarmony: s.styleHarmony,
+        seenByFriend: s.seenByFriend,
+        createdAt: s.createdAt
+      })),
+      unreadCount
+    });
+  } catch (err) {
+    console.error('[Collab Inbox] Hata:', err);
+    res.status(500).json({ error: 'Collab bildirimleri alınamadı.' });
+  }
+});
+
+// PATCH /api/collab/:id/seen — Bildirimi "okundu" işaretle
+app.patch('/api/collab/:id/seen', authenticateToken, async (req: any, res) => {
+  try {
+    const session = await CollabSessionModel.findOne({ id: req.params.id } as any);
+    if (!session) return res.status(404).json({ error: 'Collab bulunamadı.' });
+
+    // Sadece arkadaş (friendId) okundu işaretleyebilir
+    if ((session as any).friendId?.toString() !== req.user.id) {
+      return res.status(403).json({ error: 'Bu işlem için yetkiniz yok.' });
+    }
+
+    (session as any).seenByFriend = true;
+    await session.save();
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[Collab Seen] Hata:', err);
+    res.status(500).json({ error: 'Güncelleme başarısız.' });
+  }
+});
+
+// GET /api/collab/sent — Initiator'ın oluşturduğu collab'lar (gönderilen)
+app.get('/api/collab/sent', authenticateToken, async (req: any, res) => {
+  try {
+    const sessions = await CollabSessionModel.find({ initiatorId: req.user.id } as any)
+      .sort({ createdAt: -1 } as any)
+      .limit(20);
+
+    res.json({
+      success: true,
+      sessions: sessions.map((s: any) => ({
+        id: s.id,
+        initiatorId: s.initiatorId?.toString(),
+        initiatorName: s.initiatorName,
+        friendId: s.friendId?.toString(),
+        friendName: s.friendName,
+        event: s.event,
+        effort: s.effort,
+        mood: s.mood,
+        myOutfit: s.myOutfit,
+        friendOutfit: s.friendOutfit,
+        compatibilityScore: s.compatibilityScore,
+        collabReason: s.collabReason,
+        styleHarmony: s.styleHarmony,
+        seenByFriend: s.seenByFriend,
+        createdAt: s.createdAt
+      }))
+    });
+  } catch (err) {
+    console.error('[Collab Sent] Hata:', err);
+    res.status(500).json({ error: 'Gönderilen collab\'lar alınamadı.' });
   }
 });
 
