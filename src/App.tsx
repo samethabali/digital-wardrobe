@@ -774,7 +774,7 @@ function Dashboard() {
                             {currentOutfit?.title || 'AI Tavsiyesi'}
                           </h3>
                           {result?.weather && (
-                            <div className="flex items-center gap-1.5 text-xs text-text-secondary mt-0.5">
+                            <div className="flex items-center gap-1.5 text-xs text-indigo-900/70 dark:text-indigo-200/80 font-medium mt-0.5">
                               <CloudSun className="w-3.5 h-3.5 text-amber-500" />
                               <span>{result.weather.locationLabel} &bull; {Math.round(result.weather.temperatureC)}°C, {result.weather.condition}</span>
                             </div>
@@ -783,7 +783,7 @@ function Dashboard() {
                       </div>
                       <div className="flex items-center gap-2 sm:gap-3 self-end sm:self-auto">
                         {isResultVisible && (
-                          <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm px-4 py-2 rounded-full border border-indigo-200 dark:border-indigo-500/30 shadow-sm">
+                          <div className="bg-white/90 dark:bg-gray-800/90 backdrop-blur-sm px-4 py-2 rounded-full border border-indigo-200 dark:border-indigo-500/30 shadow-sm">
                             <span className="text-sm font-bold bg-gradient-to-r from-indigo-600 to-violet-600 bg-clip-text text-transparent">
                               %{currentOutfit?.score || result?.compatibilityScore || 0} Uyum
                             </span>
@@ -791,7 +791,7 @@ function Dashboard() {
                         )}
                         <button
                           onClick={() => setIsResultVisible(!isResultVisible)}
-                          className="flex items-center gap-2 px-4 py-2 bg-secondary border border-border-color text-indigo-600 dark:text-indigo-400 rounded-xl text-xs font-bold hover:bg-primary transition-all shadow-sm"
+                          className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-800 border border-indigo-200 dark:border-indigo-500/30 text-indigo-600 dark:text-indigo-400 rounded-xl text-xs font-bold hover:bg-primary transition-all shadow-sm"
                         >
                           {isResultVisible ? (
                             <><EyeOff className="w-4 h-4" /><span>Gizle</span></>
@@ -821,12 +821,12 @@ function Dashboard() {
                                     className={`px-4 py-2.5 rounded-2xl text-xs font-bold transition-all flex items-center gap-2 whitespace-nowrap ${
                                       isSelected
                                         ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30 ring-2 ring-indigo-400/40'
-                                        : 'bg-white dark:bg-gray-800 text-text-secondary hover:text-indigo-600 dark:hover:text-indigo-300 border border-border-color'
+                                        : 'bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 hover:text-indigo-600 dark:hover:text-indigo-300 border border-indigo-150 dark:border-gray-700 shadow-sm'
                                     }`}
                                   >
                                     <span>{outfit.title || `Kombin ${idx + 1}`}</span>
-                                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
-                                      isSelected ? 'bg-indigo-500 text-white' : 'bg-secondary text-text-secondary'
+                                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                                      isSelected ? 'bg-indigo-500 text-white' : 'bg-indigo-50 dark:bg-gray-700 text-indigo-700 dark:text-indigo-300'
                                     }`}>
                                       %{outfit.score}
                                     </span>
