@@ -1,171 +1,220 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Users, Shirt, Sparkles, CheckCircle2, ChevronRight, Eye } from 'lucide-react';
+import { Search, Users, Shirt, Sparkles, CheckCircle2, ChevronDown, Eye, Lock } from 'lucide-react';
 import { useNotification } from '../contexts/NotificationContext';
 import { useStylist } from '../contexts/StylistContext';
-import { apiFetch } from '../services/api';
+import { useAuth } from '../contexts/AuthContext';
+import { apiFetch, ApiError } from '../services/api';
 import type { ExploreProfile, WardrobeItem, CollabSession } from '../types';
 import PageHeader from '../components/layout/PageHeader';
 import Sheet from '../components/ui/Sheet';
-import { Button, Card, Avatar, Notice, EmptyState, cx } from '../components/ui/primitives';
+import { Button, Card, Avatar, EmptyState, Spinner, ItemImage, Chip, cx } from '../components/ui/primitives';
 import { Input, Segmented } from '../components/ui/fields';
-import { CATEGORY_LABELS, displayImage } from '../constants/wardrobe';
+import { CATEGORIES, CATEGORY_LABELS } from '../constants/wardrobe';
+import { COLLAB_SEEN_EVENT } from '../services/events';
+
+
+interface CollabDetail {
+  initiatorItems: WardrobeItem[];
+  friendItems: WardrobeItem[];
+}
+
+function OutfitStrip({ title, items, fallbackCount }: { title: string; items?: WardrobeItem[]; fallbackCount: number }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-[12px] font-semibold text-ink-2 mb-1.5 truncate">{title}</p>
+      <div className="grid grid-cols-3 gap-1.5">
+        {items
+          ? items.map(item => <ItemImage key={item.id} item={item} className="aspect-square" rounded="rounded-xl" />)
+          : Array.from({ length: Math.max(1, fallbackCount) }, (_, i) => <div key={i} className="aspect-square rounded-xl skeleton" />)}
+      </div>
+      {items && items.length === 0 && <p className="text-[12px] text-ink-3">Parçalar artık gardıropta değil.</p>}
+    </div>
+  );
+}
+
+function CollabSessionCard({ session, incoming, detail, expanded, onToggle }: {
+  session: CollabSession;
+  incoming: boolean;
+  detail?: CollabDetail;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const otherName = incoming ? session.initiatorName : session.friendName;
+  const unread = incoming && !session.seenByFriend;
+  return (
+    <Card className={cx('overflow-hidden', unread && 'border-accent/40')}>
+      <button type="button" onClick={onToggle} aria-expanded={expanded} className="w-full flex items-center gap-3 p-4 text-left">
+        <Avatar name={otherName || '?'} size={40} />
+        <div className="min-w-0 flex-1">
+          <p className="text-[15px] font-semibold text-ink truncate">
+            {otherName}
+            {unread && <span className="ml-2 align-middle inline-block w-2 h-2 rounded-full bg-accent" aria-label="Yeni" />}
+          </p>
+          <p className="text-[12px] text-ink-3 truncate">
+            {session.event || 'Etkinlik'} · {new Date(session.createdAt).toLocaleDateString('tr-TR', { day: 'numeric', month: 'long' })}
+            {!incoming && session.seenByFriend ? ' · Görüldü' : ''}
+          </p>
+        </div>
+        <span className="text-[13px] font-bold text-accent shrink-0">%{session.compatibilityScore}</span>
+        <ChevronDown className={cx('w-4 h-4 text-ink-3 shrink-0 transition-transform', expanded && 'rotate-180')} />
+      </button>
+      {expanded && (
+        <div className="px-4 pb-4 space-y-3 border-t border-line pt-3">
+          <p className="text-[13px] font-semibold text-ink">{session.styleHarmony}</p>
+          <div className="grid grid-cols-2 gap-3">
+            <OutfitStrip title={incoming ? `${otherName}` : 'Senin kombinin'} items={detail?.initiatorItems} fallbackCount={session.myOutfit.length} />
+            <OutfitStrip title={incoming ? 'Senin kombinin' : `${otherName}`} items={detail?.friendItems} fallbackCount={session.friendOutfit.length} />
+          </div>
+          {session.collabReason && <p className="text-[13px] text-ink-2 leading-relaxed">{session.collabReason}</p>}
+          {!incoming && session.seenByFriend && (
+            <p className="text-[12px] text-success flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> {otherName} gördü</p>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
 
 export default function ExploreView() {
   const { notify } = useNotification();
   const { setCollabPartner } = useStylist();
+  const { user } = useAuth();
   const navigate = useNavigate();
 
   const [tab, setTab] = React.useState<'profiles' | 'collab'>('profiles');
   const [collabSubTab, setCollabSubTab] = React.useState<'incoming' | 'sent'>('incoming');
 
-  // Profiller
   const [profiles, setProfiles] = React.useState<ExploreProfile[]>([]);
   const [loadingProfiles, setLoadingProfiles] = React.useState(true);
   const [searchQuery, setSearchQuery] = React.useState('');
 
-  // Profil Gardırobu Paneli
   const [viewingProfile, setViewingProfile] = React.useState<ExploreProfile | null>(null);
   const [profileItems, setProfileItems] = React.useState<WardrobeItem[]>([]);
+  const [profileCategory, setProfileCategory] = React.useState('all');
   const [loadingWardrobe, setLoadingWardrobe] = React.useState(false);
+  const [wardrobeError, setWardrobeError] = React.useState<string | null>(null);
 
-  // Beraber Kombinler
   const [incomingSessions, setIncomingSessions] = React.useState<CollabSession[]>([]);
   const [sentSessions, setSentSessions] = React.useState<CollabSession[]>([]);
-  const [unreadCount, setUnreadCount] = React.useState(0);
-  const [loadingCollab, setLoadingCollab] = React.useState(false);
-  const [expandedCollabId, setExpandedCollabId] = React.useState<string | null>(null);
+  const [loadingCollab, setLoadingCollab] = React.useState(true);
+  const [expandedId, setExpandedId] = React.useState<string | null>(null);
+  const [details, setDetails] = React.useState<Record<string, CollabDetail>>({});
 
-  const fetchProfiles = async () => {
-    setLoadingProfiles(true);
-    try {
-      const data = await apiFetch<{ profiles: ExploreProfile[] }>('/api/users/explore');
-      setProfiles(data.profiles || []);
-    } catch {
-      notify('Profiller yüklenemedi.', 'error');
-    } finally {
-      setLoadingProfiles(false);
-    }
-  };
-
-  const fetchCollabInbox = async () => {
-    setLoadingCollab(true);
-    try {
-      const incoming = await apiFetch<{ sessions: CollabSession[]; unreadCount: number }>('/api/collab/inbox');
-      setIncomingSessions(incoming.sessions || []);
-      setUnreadCount(incoming.unreadCount || 0);
-
-      const sent = await apiFetch<{ sessions: CollabSession[] }>('/api/collab/sent');
-      setSentSessions(sent.sessions || []);
-    } catch {
-      // sessizce geç
-    } finally {
-      setLoadingCollab(false);
-    }
-  };
+  const unreadCount = incomingSessions.filter(s => !s.seenByFriend).length;
 
   React.useEffect(() => {
-    fetchProfiles();
-    fetchCollabInbox();
+    apiFetch<{ profiles: ExploreProfile[] }>('/api/users/explore')
+      .then(data => setProfiles(data.profiles || []))
+      .catch(() => notify('Profiller yüklenemedi.', 'error'))
+      .finally(() => setLoadingProfiles(false));
+
+    Promise.all([
+      apiFetch<{ sessions: CollabSession[] }>('/api/collab/inbox'),
+      apiFetch<{ sessions: CollabSession[] }>('/api/collab/sent'),
+    ])
+      .then(([incoming, sent]) => {
+        setIncomingSessions(incoming.sessions || []);
+        setSentSessions(sent.sessions || []);
+      })
+      .catch(() => undefined)
+      .finally(() => setLoadingCollab(false));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const openProfileWardrobe = async (prof: ExploreProfile) => {
-    setViewingProfile(prof);
+  const openProfileWardrobe = async (profile: ExploreProfile) => {
+    setViewingProfile(profile);
+    setProfileItems([]);
+    setProfileCategory('all');
+    setWardrobeError(null);
     setLoadingWardrobe(true);
     try {
-      const data = await apiFetch<{ items: WardrobeItem[] }>(`/api/wardrobe/user/${encodeURIComponent(prof.id)}`);
+      const data = await apiFetch<{ items: WardrobeItem[] }>(`/api/users/explore/${encodeURIComponent(profile.id)}/wardrobe`);
       setProfileItems(data.items || []);
-    } catch {
-      notify('Kullanıcı gardırobu yüklenemedi.', 'error');
-      setProfileItems([]);
+    } catch (err) {
+      setWardrobeError(err instanceof ApiError && err.status === 403
+        ? 'Bu kullanıcı gardırobunu gizledi.'
+        : 'Gardırop yüklenemedi. Biraz sonra tekrar dene.');
     } finally {
       setLoadingWardrobe(false);
     }
   };
 
-  const startCollabWith = (prof: ExploreProfile) => {
-    setCollabPartner(prof);
-    navigate('/olustur');
+  const startCollabWith = (profile: ExploreProfile) => {
+    setCollabPartner(profile);
+    navigate('/olustur?mod=beraber');
+  };
+
+  const toggleSession = async (session: CollabSession) => {
+    const next = expandedId === session.id ? null : session.id;
+    setExpandedId(next);
+    if (!next) return;
+
+    if (!details[session.id]) {
+      apiFetch<CollabDetail>(`/api/collab/${encodeURIComponent(session.id)}`)
+        .then(data => setDetails(prev => ({ ...prev, [session.id]: { initiatorItems: data.initiatorItems, friendItems: data.friendItems } })))
+        .catch(() => setDetails(prev => ({ ...prev, [session.id]: { initiatorItems: [], friendItems: [] } })));
+    }
+
+    // Gelen ve henüz görülmemiş kombin: görüldü işaretle, menüdeki rozeti güncelle
+    if (session.friendId === user?.id && !session.seenByFriend) {
+      setIncomingSessions(prev => prev.map(s => (s.id === session.id ? { ...s, seenByFriend: true } : s)));
+      try {
+        await apiFetch(`/api/collab/${encodeURIComponent(session.id)}/seen`, { method: 'PATCH' });
+        window.dispatchEvent(new Event(COLLAB_SEEN_EVENT));
+      } catch {
+        setIncomingSessions(prev => prev.map(s => (s.id === session.id ? { ...s, seenByFriend: false } : s)));
+      }
+    }
   };
 
   const filteredProfiles = React.useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
+    const q = searchQuery.trim().toLocaleLowerCase('tr-TR');
     if (!q) return profiles;
-    return profiles.filter(p =>
-      p.name.toLowerCase().includes(q) ||
-      p.username.toLowerCase().includes(q),
-    );
+    return profiles.filter(p => p.name.toLocaleLowerCase('tr-TR').includes(q) || p.username.toLocaleLowerCase('tr-TR').includes(q));
   }, [profiles, searchQuery]);
 
+  const visibleProfileItems = profileCategory === 'all' ? profileItems : profileItems.filter(i => i.category === profileCategory);
+  const sessions = collabSubTab === 'incoming' ? incomingSessions : sentSessions;
+
   return (
-    <div className="space-y-6 pb-16">
-      <PageHeader
-        title="Keşfet"
-        subtitle="Stil topluluğundaki gardıropları keşfet ve ortak kombinler üret"
-      >
+    <div className="space-y-5 pb-16">
+      <PageHeader title="Keşfet">
         <Segmented<'profiles' | 'collab'>
           value={tab}
           onChange={setTab}
           options={[
             { value: 'profiles', label: 'Kişiler' },
-            { value: 'collab', label: 'Beraber Kombinler', badge: unreadCount > 0 ? unreadCount : undefined },
+            { value: 'collab', label: 'Beraber', badge: unreadCount || undefined },
           ]}
         />
       </PageHeader>
 
-      {/* ─── KİŞİLER SEKMESİ ────────────────────────────────────────────────── */}
       {tab === 'profiles' && (
         <div className="space-y-4">
-          <Input
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            placeholder="İsim veya kullanıcı adı ara…"
-            leading={<Search className="w-4 h-4" />}
-            className="h-11"
-          />
+          <Input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="İsim veya kullanıcı adı ara…" leading={<Search className="w-4 h-4" />} />
 
-          {filteredProfiles.length === 0 && !loadingProfiles ? (
+          {loadingProfiles ? (
+            <div className="py-12 flex justify-center"><Spinner className="w-7 h-7" /></div>
+          ) : filteredProfiles.length === 0 ? (
             <EmptyState
-              icon={<Users className="w-8 h-8 text-ink-3" />}
+              icon={<Users className="w-8 h-8" />}
               title="Kullanıcı bulunamadı"
-              text={searchQuery ? 'Farklı bir arama yapmayı deneyebilirsin.' : 'Henüz herkese açık gardırop profili bulunmuyor.'}
+              text={searchQuery ? 'Farklı bir arama dene.' : 'Henüz herkese açık gardırop yok.'}
             />
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {filteredProfiles.map(prof => (
-                <Card key={prof.id} className="p-4 sm:p-5 flex flex-col justify-between gap-4">
-                  <div className="flex items-start gap-3.5">
-                    <Avatar name={prof.name} size={48} />
-                    <div className="min-w-0 flex-1">
-                      <h3 className="text-base font-bold text-ink truncate">{prof.name}</h3>
-                      <p className="text-xs text-ink-3">@{prof.username}</p>
-                      <p className="text-[11px] font-semibold text-accent mt-2 flex items-center gap-1">
-                        <Shirt className="w-3.5 h-3.5" />
-                        <span>{prof.itemCount || 0} parça kıyafet</span>
-                      </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {filteredProfiles.map(profile => (
+                <Card key={profile.id} className="p-4 flex items-center gap-3">
+                  <button type="button" onClick={() => openProfileWardrobe(profile)} className="flex items-center gap-3 min-w-0 flex-1 text-left">
+                    <Avatar name={profile.name} size={46} />
+                    <div className="min-w-0">
+                      <p className="text-[15px] font-semibold text-ink truncate">{profile.name}</p>
+                      <p className="text-[12px] text-ink-3 truncate">@{profile.username} · {profile.itemCount || 0} parça</p>
                     </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 pt-2 border-t border-line">
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      className="flex-1"
-                      onClick={() => openProfileWardrobe(prof)}
-                      icon={<Eye className="w-4 h-4" />}
-                    >
-                      Gardırobu İncele
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      className="flex-1"
-                      onClick={() => startCollabWith(prof)}
-                      icon={<Sparkles className="w-4 h-4" />}
-                    >
-                      Beraber Kombin
-                    </Button>
-                  </div>
+                  </button>
+                  <Button size="sm" variant="secondary" onClick={() => startCollabWith(profile)} icon={<Sparkles className="w-4 h-4" />}>
+                    Beraber
+                  </Button>
                 </Card>
               ))}
             </div>
@@ -173,156 +222,90 @@ export default function ExploreView() {
         </div>
       )}
 
-      {/* ─── BERABER KOMBİNLER SEKMESİ ──────────────────────────────────────── */}
       {tab === 'collab' && (
         <div className="space-y-4 max-w-2xl mx-auto">
           <Segmented<'incoming' | 'sent'>
             size="sm"
             value={collabSubTab}
-            onChange={setCollabSubTab}
+            onChange={value => { setCollabSubTab(value); setExpandedId(null); }}
             options={[
-              { value: 'incoming', label: 'Gelen İstekler', badge: unreadCount > 0 ? unreadCount : undefined },
-              { value: 'sent', label: 'Gönderdiklerim' },
+              { value: 'incoming', label: 'Sana gelenler', badge: unreadCount || undefined },
+              { value: 'sent', label: 'Gönderdiklerin' },
             ]}
           />
-
-          {collabSubTab === 'incoming' && (
+          {loadingCollab ? (
+            <div className="py-12 flex justify-center"><Spinner className="w-7 h-7" /></div>
+          ) : sessions.length === 0 ? (
+            <EmptyState
+              icon={collabSubTab === 'incoming' ? <Sparkles className="w-8 h-8" /> : <Users className="w-8 h-8" />}
+              title={collabSubTab === 'incoming' ? 'Henüz gelen beraber kombin yok' : 'Henüz beraber kombin oluşturmadın'}
+              text={collabSubTab === 'incoming'
+                ? 'Biri seninle beraber kombin oluşturduğunda burada görünür.'
+                : 'Kişiler sekmesinden birini seçip "Beraber" düğmesine dokun.'}
+            />
+          ) : (
             <div className="space-y-3">
-              {incomingSessions.length === 0 && !loadingCollab ? (
-                <EmptyState
-                  icon={<Sparkles className="w-8 h-8 text-ink-3" />}
-                  title="Gelen kombin isteği yok"
-                  text="Arkadaşların seninle ortak bir kombin planladığında burada görünecek."
+              {sessions.map(session => (
+                <CollabSessionCard
+                  key={session.id}
+                  session={session}
+                  incoming={collabSubTab === 'incoming'}
+                  detail={details[session.id]}
+                  expanded={expandedId === session.id}
+                  onToggle={() => toggleSession(session)}
                 />
-              ) : (
-                incomingSessions.map(session => {
-                  const isExpanded = expandedCollabId === session.id;
-                  return (
-                    <Card key={session.id} className="p-4 space-y-3">
-                      <div
-                        className="flex items-center justify-between cursor-pointer"
-                        onClick={() => setExpandedCollabId(isExpanded ? null : session.id)}
-                      >
-                        <div className="flex items-center gap-2.5">
-                          <Avatar name={session.initiatorName || 'A'} size={36} />
-                          <div>
-                            <p className="text-sm font-bold text-ink">{session.initiatorName}</p>
-                            <p className="text-[11px] text-ink-3">
-                              {new Date(session.createdAt).toLocaleDateString('tr-TR')} · {session.event || 'Etkinlik'}
-                            </p>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-accent-soft text-accent">
-                            %{session.compatibilityScore} Uyum
-                          </span>
-                          <ChevronRight className={cx('w-4 h-4 text-ink-3 transition-transform', isExpanded && 'rotate-90')} />
-                        </div>
-                      </div>
-
-                      {session.collabReason && (
-                        <p className="text-xs text-ink-2 leading-relaxed">{session.collabReason}</p>
-                      )}
-
-                      {isExpanded && (
-                        <div className="pt-3 border-t border-line space-y-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-bold text-ink">Stil Teması:</span>
-                            <span className="text-xs font-semibold text-accent">{session.styleHarmony}</span>
-                          </div>
-                          <p className="text-xs text-ink-3">
-                            Arkadaşının kombini ({session.myOutfit.length} parça) ile senin kombinin ({session.friendOutfit.length} parça) başarıyla eşleştirildi.
-                          </p>
-                        </div>
-                      )}
-                    </Card>
-                  );
-                })
-              )}
-            </div>
-          )}
-
-          {collabSubTab === 'sent' && (
-            <div className="space-y-3">
-              {sentSessions.length === 0 && !loadingCollab ? (
-                <EmptyState
-                  icon={<Users className="w-8 h-8 text-ink-3" />}
-                  title="Gönderilmiş istek yok"
-                  text="Bir arkadaşını seçip 'Beraber Kombin' oluşturduğunda burada takip edebilirsin."
-                />
-              ) : (
-                sentSessions.map(session => (
-                  <Card key={session.id} className="p-4 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <p className="text-sm font-bold text-ink">{session.friendName} ile Kombin</p>
-                      <span className="text-xs font-bold text-accent">
-                        %{session.compatibilityScore} Uyum
-                      </span>
-                    </div>
-                    {session.collabReason && (
-                      <p className="text-xs text-ink-2">{session.collabReason}</p>
-                    )}
-                    {session.seenByFriend && (
-                      <p className="text-[11px] text-success flex items-center gap-1">
-                        <CheckCircle2 className="w-3.5 h-3.5" /> Görüldü
-                      </p>
-                    )}
-                  </Card>
-                ))
-              )}
+              ))}
             </div>
           )}
         </div>
       )}
 
-      {/* ─── PROFİL GARDIROBU PANELİ ────────────────────────────────────────── */}
-      {viewingProfile && (
-        <Sheet
-          open={Boolean(viewingProfile)}
-          onClose={() => setViewingProfile(null)}
-          title={viewingProfile.name}
-          subtitle={`@${viewingProfile.username} · ${profileItems.length} parça kıyafet`}
-          width="lg"
-          footer={
-            <Button
-              variant="primary"
-              block
-              onClick={() => {
-                const p = viewingProfile;
-                setViewingProfile(null);
-                startCollabWith(p);
-              }}
-              icon={<Sparkles className="w-4 h-4" />}
-            >
-              Bu Gardıropla Beraber Kombin Yap
-            </Button>
-          }
-        >
-          <div className="pt-2 pb-6">
-            {profileItems.length === 0 && !loadingWardrobe ? (
-              <p className="text-sm text-ink-3 text-center py-10">Bu kullanıcının herkese açık parçası bulunmuyor.</p>
-            ) : (
+      <Sheet
+        open={Boolean(viewingProfile)}
+        onClose={() => setViewingProfile(null)}
+        title={viewingProfile?.name}
+        subtitle={viewingProfile ? `@${viewingProfile.username} · ${viewingProfile.itemCount || 0} parça` : undefined}
+        width="lg"
+        fullHeight
+        footer={viewingProfile && !wardrobeError ? (
+          <Button block size="lg" onClick={() => { const p = viewingProfile; setViewingProfile(null); startCollabWith(p); }} icon={<Sparkles className="w-4 h-4" />}>
+            Beraber kombin oluştur
+          </Button>
+        ) : undefined}
+      >
+        <div className="pt-1 pb-4 space-y-3">
+          {loadingWardrobe ? (
+            <div className="py-16 flex justify-center"><Spinner className="w-7 h-7" /></div>
+          ) : wardrobeError ? (
+            <EmptyState icon={<Lock className="w-8 h-8" />} title="Gardırop görüntülenemiyor" text={wardrobeError} />
+          ) : profileItems.length === 0 ? (
+            <EmptyState icon={<Shirt className="w-8 h-8" />} title="Henüz parça eklenmemiş" />
+          ) : (
+            <>
+              <div className="flex gap-1.5 overflow-x-auto no-scrollbar -mx-5 px-5 pb-1">
+                <Chip selected={profileCategory === 'all'} onClick={() => setProfileCategory('all')} count={profileItems.length}>Tümü</Chip>
+                {CATEGORIES.filter(c => profileItems.some(i => i.category === c)).map(c => (
+                  <Chip key={c} selected={profileCategory === c} onClick={() => setProfileCategory(c)} count={profileItems.filter(i => i.category === c).length}>
+                    {CATEGORY_LABELS[c]}
+                  </Chip>
+                ))}
+              </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                {profileItems.map(item => (
-                  <div key={item.id} className="p-2.5 rounded-2xl bg-surface-2 border border-line">
-                    <div className="aspect-[4/5] rounded-xl overflow-hidden bg-surface p-1 flex items-center justify-center">
-                      <img
-                        src={displayImage(item)}
-                        alt={item.name}
-                        className="w-full h-full object-contain"
-                        loading="lazy"
-                      />
-                    </div>
-                    <p className="text-xs font-semibold text-ink truncate mt-2">{item.name}</p>
-                    <p className="text-[11px] text-ink-3 truncate">{CATEGORY_LABELS[item.category] || item.category}</p>
+                {visibleProfileItems.map(item => (
+                  <div key={item.id}>
+                    <ItemImage item={item} className="aspect-[4/5]" />
+                    <p className="text-[13px] font-semibold text-ink truncate mt-1.5">{item.name}</p>
+                    <p className="text-[12px] text-ink-3 truncate">{CATEGORY_LABELS[item.category] || item.category}</p>
                   </div>
                 ))}
               </div>
-            )}
-          </div>
-        </Sheet>
-      )}
+              {viewingProfile && viewingProfile.itemCount > profileItems.length && (
+                <p className="text-[12px] text-ink-3 text-center flex items-center justify-center gap-1"><Eye className="w-3.5 h-3.5" /> Son eklenen {profileItems.length} parça gösteriliyor.</p>
+              )}
+            </>
+          )}
+        </div>
+      </Sheet>
     </div>
   );
 }

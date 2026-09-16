@@ -12,12 +12,8 @@ var ConfigError = class extends Error {
   }
 };
 var MIN_JWT_SECRET_LENGTH = 32;
-var VERCEL_DEFAULT_JWT_SECRET = "aura_wardrobe_production_secure_jwt_key_2026_v1_xyz";
 function getJwtSecret() {
-  let secret = process.env.JWT_SECRET?.trim();
-  if ((!secret || secret.length < MIN_JWT_SECRET_LENGTH) && process.env.VERCEL) {
-    secret = VERCEL_DEFAULT_JWT_SECRET;
-  }
+  const secret = process.env.JWT_SECRET?.trim();
   if (!secret || secret.length < MIN_JWT_SECRET_LENGTH) {
     throw new ConfigError("JWT_SECRET", `en az ${MIN_JWT_SECRET_LENGTH} karakter olmal\u0131`);
   }
@@ -29,19 +25,16 @@ function getMongoUri() {
   return uri;
 }
 function getGeminiApiKey() {
-  let key = process.env.GEMINI_API_KEY?.trim();
-  if (!key && process.env.VERCEL) {
-    key = Buffer.from("QUl6YVN5Q0QwTHNwZmdzTFI3R0tFQmU4dmdUQk0xNGpkOXBZ", "base64").toString("utf8");
-  }
+  const key = process.env.GEMINI_API_KEY?.trim();
   if (!key) throw new ConfigError("GEMINI_API_KEY");
   return key;
 }
 function getCloudinaryCredentials() {
-  const cloud_name = process.env.CLOUDINARY_CLOUD_NAME?.trim() || (process.env.VERCEL ? "dstqxvqqf" : "");
-  const api_key = process.env.CLOUDINARY_API_KEY?.trim() || (process.env.VERCEL ? "385148218883752" : "");
-  const cloudSecret = process.env.CLOUDINARY_API_SECRET?.trim() || (process.env.VERCEL ? Buffer.from("cjFtUnhKMVJMSEoxVEQzcDRkQVRzc2E1UkU=", "base64").toString("utf8") : "");
-  if (!cloud_name || !api_key || !cloudSecret) return null;
-  return { cloud_name, api_key, api_secret: cloudSecret };
+  const cloud_name = process.env.CLOUDINARY_CLOUD_NAME?.trim();
+  const api_key = process.env.CLOUDINARY_API_KEY?.trim();
+  const api_secret = process.env.CLOUDINARY_API_SECRET?.trim();
+  if (!cloud_name || !api_key || !api_secret) return null;
+  return { cloud_name, api_key, api_secret };
 }
 function getVapidConfig() {
   const publicKey = process.env.VAPID_PUBLIC_KEY?.trim();
@@ -6509,7 +6502,7 @@ function socialRoutes() {
         { $match: { userId: { $in: users.map((u) => u._id) } } },
         { $group: { _id: "$userId", count: { $sum: 1 } } }
       ]);
-      const countBy = new Map(counts.map((c) => [c._id.toString(), c.count]));
+      const countBy2 = new Map(counts.map((c) => [c._id.toString(), c.count]));
       res.json({
         success: true,
         profiles: users.map((u) => ({
@@ -6517,7 +6510,7 @@ function socialRoutes() {
           name: u.name,
           username: u.username,
           createdAt: u.createdAt,
-          itemCount: countBy.get(u._id.toString()) || 0
+          itemCount: countBy2.get(u._id.toString()) || 0
         }))
       });
     } catch (err) {
@@ -6617,11 +6610,30 @@ function socialRoutes() {
       sendError(res, err, "G\xF6nderilen collab'lar al\u0131namad\u0131.", "Collab Sent");
     }
   });
+  router.get("/api/collab/:id", authenticateToken, async (req, res) => {
+    try {
+      const session = await CollabSessionModel.findOne({ id: String(req.params.id) }).lean();
+      const isParticipant = session && [session.initiatorId?.toString(), session.friendId?.toString()].includes(req.user.id);
+      if (!session || !isParticipant) return res.status(404).json({ error: "Beraber kombin bulunamad\u0131." });
+      const [initiatorItems, friendItems] = await Promise.all([
+        ItemModel.find({ userId: session.initiatorId, id: { $in: session.myOutfit || [] } }).lean(),
+        ItemModel.find({ userId: session.friendId, id: { $in: session.friendOutfit || [] } }).lean()
+      ]);
+      res.json({
+        session: toSessionDTO(session),
+        initiatorItems: initiatorItems.map(toItemDTO),
+        friendItems: friendItems.map(toItemDTO)
+      });
+    } catch (err) {
+      sendError(res, err, "Beraber kombin al\u0131namad\u0131.", "Collab Detail");
+    }
+  });
   return router;
 }
 
 // backend/routes/wardrobe.ts
 import express3 from "express";
+import mongoose2 from "mongoose";
 
 // backend/engine/capsule.ts
 var CAPSULE_TARGETS = ["any", "top", "bottom", "onepiece", "outerwear", "shoes", "accessory"];
@@ -6708,18 +6720,18 @@ function contributionOf(candidate, items) {
   return pairs;
 }
 function summarize(items) {
-  const countBy = (key) => items.reduce((acc, item) => {
+  const countBy2 = (key) => items.reduce((acc, item) => {
     const k = key(item);
     acc[k] = (acc[k] || 0) + 1;
     return acc;
   }, {});
   return {
-    kategoriler: countBy((i) => i.category),
-    renkAileleri: countBy((i) => i.colorFamily || UNKNOWN),
-    stiller: countBy((i) => i.style),
-    resmiyet: countBy((i) => String(i.formality)),
-    sicakTutma: countBy((i) => String(i.warmth)),
-    mevsimler: countBy((i) => i.seasons.join("/")),
+    kategoriler: countBy2((i) => i.category),
+    renkAileleri: countBy2((i) => i.colorFamily || UNKNOWN),
+    stiller: countBy2((i) => i.style),
+    resmiyet: countBy2((i) => String(i.formality)),
+    sicakTutma: countBy2((i) => String(i.warmth)),
+    mevsimler: countBy2((i) => i.seasons.join("/")),
     mevcutTurler: Array.from(new Set(items.map((i) => `${i.category}: ${i.colorFamily || ""} ${i.subCategory}`))).slice(0, 120)
   };
 }
@@ -7398,6 +7410,11 @@ function styleClusters(items) {
   }
   return clusters.sort((a, b) => b.size - a.size);
 }
+function countBy(items, key) {
+  const counts = {};
+  for (const item of items) counts[key(item)] = (counts[key(item)] || 0) + 1;
+  return counts;
+}
 function computeWardrobeStats(items, logs, today = localDate()) {
   const wearable = items.filter((i) => i.category !== "makeup");
   const stats = wearable.map(toWornStat);
@@ -7419,7 +7436,12 @@ function computeWardrobeStats(items, logs, today = localDate()) {
     costPerWear: [...priced].sort((a, b) => (b.costPerWear ?? 0) - (a.costPerWear ?? 0)).slice(0, 10),
     wardrobeValue: priced.length ? Math.round(priced.reduce((sum, s) => sum + (s.price ?? 0), 0)) : null,
     styleClusters: styleClusters(items),
-    embeddedItems: items.filter((i) => Array.isArray(i.embedding) && i.embedding.length > 0).length
+    embeddedItems: items.filter((i) => Array.isArray(i.embedding) && i.embedding.length > 0).length,
+    byCategory: countBy(items, (i) => i.category || "top"),
+    topColors: Object.entries(countBy(items.filter((i) => i.color), (i) => String(i.color).trim().toLocaleLowerCase("tr-TR"))).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([color, count]) => ({ color, count })),
+    topStyles: Object.entries(countBy(items.filter((i) => i.style), (i) => i.style)).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([style, count]) => ({ style, count })),
+    aiAnalyzed: items.filter((i) => i.aiAnalyzed).length,
+    completeItems: items.filter((i) => missingFields(i).length === 0).length
   };
 }
 
@@ -7497,6 +7519,20 @@ async function handleFeedback(user, feedback) {
 // backend/routes/wardrobe.ts
 var newItemId = () => `item_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 var ITEM_ID = /^[\w.:-]{1,100}$/;
+function parseWardrobeQuery(query) {
+  const filter = {};
+  if (query?.category !== void 0 && query.category !== "" && query.category !== "all") {
+    if (typeof query.category !== "string" || !CATEGORIES.includes(query.category)) return { error: "Ge\xE7ersiz kategori." };
+    filter.category = query.category;
+  }
+  if (query?.q !== void 0 && query.q !== "") {
+    if (typeof query.q !== "string" || query.q.length > 60) return { error: "Ge\xE7ersiz arama." };
+    const escaped = query.q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/[iİ]/g, "[i\u0130]").replace(/[ıI]/g, "[\u0131I]");
+    const regex = { $regex: escaped, $options: "i" };
+    filter.$or = ["name", "color", "subCategory", "material"].map((field) => ({ [field]: regex }));
+  }
+  return { filter };
+}
 function toSimilarDTO(similar) {
   return similar.map((s) => ({
     id: s.item.id,
@@ -7517,11 +7553,29 @@ function wardrobeRoutes({ uploadMiddleware }) {
       const page = Math.max(1, parseInt(req.query.page) || 1);
       const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 50));
       const skip = (page - 1) * limit;
-      const [total, items] = await Promise.all([
-        ItemModel.countDocuments({ userId: req.user.id }),
-        ItemModel.find({ userId: req.user.id }).skip(skip).limit(limit).sort({ _id: -1 }).lean()
+      const listQuery = parseWardrobeQuery(req.query);
+      if ("error" in listQuery) return res.status(400).json({ error: listQuery.error });
+      const filter = { userId: req.user.id, ...listQuery.filter };
+      const [total, items, counts] = await Promise.all([
+        ItemModel.countDocuments(filter),
+        ItemModel.find(filter).skip(skip).limit(limit).sort({ _id: -1 }).lean(),
+        // Kategori çiplerindeki sayılar tüm gardıroptan (yüklenmiş sayfadan değil)
+        ItemModel.aggregate([
+          { $match: { userId: new mongoose2.Types.ObjectId(req.user.id) } },
+          { $group: { _id: "$category", count: { $sum: 1 } } }
+        ])
       ]);
-      res.json({ items: items.map(toItemDTO), total, page, totalPages: Math.ceil(total / limit), hasMore: page * limit < total });
+      const categoryCounts = Object.fromEntries(counts.map((c) => [c._id || "top", c.count]));
+      const wardrobeTotal = Object.values(categoryCounts).reduce((sum, n) => sum + n, 0);
+      res.json({
+        items: items.map(toItemDTO),
+        total,
+        wardrobeTotal,
+        categoryCounts,
+        page,
+        totalPages: Math.ceil(total / limit),
+        hasMore: page * limit < total
+      });
     } catch (err) {
       sendError(res, err, "Gard\u0131rop al\u0131namad\u0131.", "Wardrobe");
     }

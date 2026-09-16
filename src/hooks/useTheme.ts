@@ -14,32 +14,39 @@ function readMode(): ThemeMode {
   }
 }
 
+const media = typeof window !== 'undefined' ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+
 function apply(mode: ThemeMode) {
-  const dark = mode === 'dark' || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  const dark = mode === 'dark' || (mode === 'system' && Boolean(media?.matches));
   document.documentElement.classList.toggle('dark', dark);
   document.querySelectorAll('meta[name="theme-color"]').forEach(meta => meta.setAttribute('content', dark ? '#141311' : '#f5f1eb'));
 }
 
+// Tek kaynak: uygulamadaki tüm useTheme çağrıları aynı modu görür (kabuk ve ayarlar ekranı ayrışmaz)
+let currentMode: ThemeMode = typeof window !== 'undefined' ? readMode() : 'system';
+const listeners = new Set<() => void>();
+
+media?.addEventListener('change', () => {
+  if (currentMode === 'system') apply('system');
+});
+
+function setThemeMode(next: ThemeMode) {
+  try {
+    localStorage.setItem(KEY, next);
+    localStorage.removeItem('aura_dark_mode');
+  } catch { /* gizli sekme */ }
+  currentMode = next;
+  apply(next);
+  listeners.forEach(listener => listener());
+}
+
 /** Açık / koyu / sistem teması. Sistem modunda işletim sistemi tercihi değişince tema da değişir. */
 export function useTheme() {
-  const [mode, setModeState] = React.useState<ThemeMode>(readMode);
-
-  React.useEffect(() => {
-    apply(mode);
-    if (mode !== 'system') return;
-    const media = window.matchMedia('(prefers-color-scheme: dark)');
-    const onChange = () => apply('system');
-    media.addEventListener('change', onChange);
-    return () => media.removeEventListener('change', onChange);
-  }, [mode]);
-
-  const setMode = React.useCallback((next: ThemeMode) => {
-    try {
-      localStorage.setItem(KEY, next);
-      localStorage.removeItem('aura_dark_mode');
-    } catch { /* gizli sekme */ }
-    setModeState(next);
-  }, []);
-
-  return { mode, setMode };
+  const mode = React.useSyncExternalStore(
+    listener => { listeners.add(listener); return () => listeners.delete(listener); },
+    () => currentMode,
+    () => 'system' as ThemeMode,
+  );
+  React.useEffect(() => { apply(mode); }, [mode]);
+  return { mode, setMode: setThemeMode };
 }

@@ -136,3 +136,18 @@ Diğer kararlar:
 - [x] `Login`, `Register`, `ProtectedRoute`, `PromptModal` (panel + onay metni), `NotificationCenter` (mobilde üstte)
 - [x] `App.tsx`'i yönlendirmeli yeni kabukla değiştirmek; eski bileşenleri kaldırmak
 - [x] Derleme (`npm run build`), tip denetimi (`npx tsc --noEmit`), backend testleri (`npm test` – 79/79 başarılı) eksiksiz doğrulandı.
+
+---
+
+## İnceleme ve düzeltmeler (17 Eylül 2026)
+
+Arayüz örnek verili önizleme sunucusunda iPhone (390×844) ve masaüstü (1440×900) ekran görüntüleriyle kontrol edildi.
+
+- [x] Parça detayı açılınca uygulamanın çökmesi (form boş nesneyle başlıyordu) giderildi; silmede tek onay.
+- [x] Dolap filtresi ve araması sunucuda yapılıyor (tüm gardırop); kategori sayıları ve toplam tüm gardıroptan. "Daha fazla" listeyi değiştirmek yerine ekliyor. Boş durum mesajları ayrıldı.
+- [x] Keşfet'te gardırop incelemesi doğru uç noktaya gidiyor; beraber kombin detayında iki tarafın parçaları (`GET /api/collab/:id`) ve "görüldü" işareti, menü rozeti anında güncelleniyor.
+- [x] İstatistikler ve kapsül analizi tüm gardıroptan, doğru alanlarla (`suggestions`).
+- [x] Oluştur: tarih/saat, etkinlik açıklaması, hareket, ruh hali, stil etiketleri, zorunlu parçalar ("Ayrıntılar" altında); sonuçta puan dökümü, uyarılar, hava hatası, kolaj, seçenekler. Mobilde form özet karta dönüşüp sonuca kayıyor. Mod adreste (`?mod=beraber`).
+- [x] Kombinler: not düzenleme, parça ekleme (seçici panel) ve çıkarma.
+- [x] Profil kartı yapışkan başlıktan çıkarıldı; tema tek kaynaktan yönetiliyor.
+- [x] `backend/config.ts`'e yeniden eklenen gömülü anahtarlar kaldırıldı; base64 ile gizlenmiş değerleri de yakalayan tarama testi eklendi.

@@ -35,15 +35,30 @@ test('JWT_SECRET tanımlı değilse korumalı uç noktalar 503 döner, sabit bir
   assert.equal((await t.api('GET', '/api/auth/me', { token })).status, 200);
 });
 
-test('koddaki gizli değer yedekleri kaldırılmış', async () => {
+test('koddaki gizli değer yedekleri kaldırılmış (base64 ile gizlenmiş olanlar dahil)', async () => {
   const fs = await import('fs');
-  const files = ['server.ts', 'backend/db.ts', 'backend/cloudinary.ts', 'backend/ai/gemini.ts', 'backend/http.ts', 'backend/config.ts'];
-  for (const file of files) {
-    const source = fs.readFileSync(file, 'utf8');
-    assert.ok(!/mongodb(\+srv)?:\/\/[^'"`\s]*:[^'"`\s]*@/.test(source), `${file}: bağlantı adresinde şifre var`);
-    assert.ok(!/AIza[0-9A-Za-z_-]{20,}/.test(source), `${file}: Gemini anahtarı var`);
-    assert.ok(!source.includes(LEAKED_FALLBACK_SECRET), `${file}: JWT yedek anahtarı var`);
-    assert.ok(!/api_secret:\s*process\.env\.[A-Z_]+\s*\|\|/.test(source), `${file}: Cloudinary secret yedeği var`);
+  const path = await import('path');
+  const { findEmbeddedSecrets } = await import('./helpers/secretScan.js');
+  const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true })
+    .flatMap(e => (e.isDirectory() ? walk(path.join(dir, e.name)) : e.name.endsWith('.ts') ? [path.join(dir, e.name)] : []));
+  for (const file of ['server.ts', ...walk('backend'), ...walk('shared')]) {
+    const findings = findEmbeddedSecrets(fs.readFileSync(file, 'utf8'));
+    assert.deepEqual(findings, [], `${file}: ${findings.join('; ')}`);
+  }
+});
+
+test('Vercel ortamında da eksik gizli değişkenler sabit değere düşmez', async () => {
+  const config = await import('../backend/config.js');
+  const saved = { ...process.env };
+  try {
+    process.env.VERCEL = '1';
+    for (const key of ['JWT_SECRET', 'GEMINI_API_KEY', 'MONGODB_URI', 'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET']) delete process.env[key];
+    assert.throws(() => config.getJwtSecret(), config.ConfigError);
+    assert.throws(() => config.getGeminiApiKey(), config.ConfigError);
+    assert.throws(() => config.getMongoUri(), config.ConfigError);
+    assert.equal(config.getCloudinaryCredentials(), null);
+  } finally {
+    process.env = saved;
   }
 });
 

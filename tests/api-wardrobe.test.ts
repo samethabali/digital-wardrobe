@@ -223,3 +223,28 @@ test('kapsül analizi kategori doğrulaması; gardırop sayfalaması sınırlı'
   const byIds = await t.api('GET', `/api/wardrobe?ids=${WARDROBES.kucuk[0].id},${WARDROBES.kucuk[1].id},z_${WARDROBES.kucuk[0].id},{$ne:1}`, { token: u.token });
   assert.deepEqual(byIds.body.items.map((i: any) => i.id).sort(), [WARDROBES.kucuk[0].id, WARDROBES.kucuk[1].id].sort(), 'yalnızca kendi parçaları');
 });
+
+test('gardırop listesi: sunucu tarafı kategori/arama filtresi ve tüm gardıroptan kategori sayıları', async () => {
+  const u = await t.createUser('Filtre');
+  const docs = ownedItems(WARDROBES.orta, u.id);
+  await t.models.ItemModel.insertMany(docs);
+  const tops = docs.filter(d => d.category === 'top').length;
+
+  // Sayfa boyutu küçük olsa da sayılar tüm gardıroptan gelir
+  const first = await t.api('GET', '/api/wardrobe?page=1&limit=5', { token: u.token });
+  assert.equal(first.body.items.length, 5);
+  assert.equal(first.body.wardrobeTotal, docs.length);
+  assert.equal(first.body.categoryCounts.top, tops);
+
+  const onlyTops = await t.api('GET', '/api/wardrobe?category=top&limit=100', { token: u.token });
+  assert.equal(onlyTops.body.total, tops);
+  assert.ok(onlyTops.body.items.every((i: any) => i.category === 'top'));
+
+  const search = await t.api('GET', `/api/wardrobe?q=${encodeURIComponent('LACİVERT')}&limit=100`, { token: u.token });
+  assert.ok(search.body.total > 0, 'Türkçe büyük İ ile arama eşleşmeli');
+  assert.ok(search.body.items.every((i: any) => /lacivert/i.test(`${i.name} ${i.color}`)));
+
+  const regexInjection = await t.api('GET', `/api/wardrobe?q=${encodeURIComponent('.*')}`, { token: u.token });
+  assert.equal(regexInjection.body.total, 0, 'arama metni düzenli ifade olarak yorumlanmamalı');
+  assert.equal((await t.api('GET', '/api/wardrobe?category=$ne', { token: u.token })).status, 400);
+});

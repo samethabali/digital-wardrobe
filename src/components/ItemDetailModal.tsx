@@ -19,11 +19,12 @@ interface Props {
 
 export default function ItemDetailModal({ item, onClose, onUpdate, onDeleted }: Props) {
   const { handleDeleteItem } = useWardrobe();
-  const { notify, askConfirm } = useNotification();
+  const { notify } = useNotification();
 
   const [isEditing, setIsEditing] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
-  const [form, setForm] = React.useState<ItemFormValues>(() => (item ? toItemForm(item) : ({} as ItemFormValues)));
+  // Panel kapalıyken de geçerli varsayılanlarla başlar: parça seçildiği ilk çizimde form alanları boş nesne olmamalı
+  const [form, setForm] = React.useState<ItemFormValues>(() => toItemForm(item || {}));
   const [cutoutBusy, setCutoutBusy] = React.useState(false);
   const [showOriginal, setShowOriginal] = React.useState(false);
   const [pairings, setPairings] = React.useState<GenerateOutfitResponse | null>(null);
@@ -31,9 +32,9 @@ export default function ItemDetailModal({ item, onClose, onUpdate, onDeleted }: 
   const [similar, setSimilar] = React.useState<SimilarItemDTO[]>([]);
   const [deleting, setDeleting] = React.useState(false);
 
+  // Başka bir parça açıldığında paneli sıfırla
   React.useEffect(() => {
     if (item) {
-      setForm(toItemForm(item));
       setIsEditing(false);
       setShowOriginal(false);
       setPairings(null);
@@ -42,7 +43,12 @@ export default function ItemDetailModal({ item, onClose, onUpdate, onDeleted }: 
         .then(data => setSimilar(data.similarItems || []))
         .catch(() => setSimilar([]));
     }
-  }, [item]);
+  }, [item?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Kaydetme veya arka plan kaldırma sonrası güncel parça bilgisini forma yansıt (düzenleme sürerken dokunma)
+  React.useEffect(() => {
+    if (item && !isEditing) setForm(toItemForm(item));
+  }, [item]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!item) return null;
 
@@ -92,13 +98,11 @@ export default function ItemDetailModal({ item, onClose, onUpdate, onDeleted }: 
   };
 
   const onDelete = async () => {
-    const ok = await askConfirm('Parçayı Sil', `"${item.name}" gardırobundan kalıcı olarak silinecek. Emin misin?`, 'Evet, Sil');
-    if (!ok) return;
+    // Onay ve bildirim handleDeleteItem içinde
     setDeleting(true);
     try {
       const success = await handleDeleteItem(item.id);
       if (success) {
-        notify('Parça gardırobundan silindi.', 'success');
         onDeleted?.();
         onClose();
       }
@@ -260,16 +264,9 @@ export default function ItemDetailModal({ item, onClose, onUpdate, onDeleted }: 
           </Notice>
         )}
 
-        {/* Nitelikler Formu */}
-        <ItemAttributeFields
-          form={form}
-          onChange={setForm}
-          disabled={!isEditing}
-        />
-
         {/* Bu Parçayla Ne Giyerim? (Sadece görüntüleme modunda) */}
         {!isEditing && (
-          <div className="pt-2 border-t border-line space-y-3">
+          <div className="space-y-3">
             <Button
               variant="secondary"
               block
@@ -317,6 +314,13 @@ export default function ItemDetailModal({ item, onClose, onUpdate, onDeleted }: 
             )}
           </div>
         )}
+        {/* Nitelikler Formu */}
+        <ItemAttributeFields
+          form={form}
+          onChange={setForm}
+          disabled={!isEditing}
+        />
+
       </div>
     </Sheet>
   );

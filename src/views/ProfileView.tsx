@@ -15,7 +15,7 @@ import { Segmented } from '../components/ui/fields';
 
 export default function ProfileView() {
   const { user, logout } = useAuth();
-  const { items } = useWardrobe();
+  const { total } = useWardrobe();
   const { savedOutfits } = useStylist();
   const { mode, setMode } = useTheme();
   const { notify, askConfirm } = useNotification();
@@ -48,8 +48,9 @@ export default function ProfileView() {
             Çıkış Yap
           </Button>
         }
-      >
-        <div className="pt-2">
+      />
+
+        <div>
           <Card className="p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div className="flex items-center gap-3.5">
               <Avatar name={user.name} size={52} />
@@ -61,7 +62,7 @@ export default function ProfileView() {
 
             <div className="flex items-center gap-3 w-full sm:w-auto pt-2 sm:pt-0 border-t sm:border-t-0 border-line">
               <div className="flex-1 sm:flex-initial px-3 py-1.5 rounded-2xl bg-surface-2 border border-line text-center">
-                <span className="text-base font-bold text-ink block leading-none">{items.length}</span>
+                <span className="text-base font-bold text-ink block leading-none">{total}</span>
                 <span className="text-[10px] text-ink-3 font-semibold uppercase tracking-wider">Kıyafet</span>
               </div>
               <div className="flex-1 sm:flex-initial px-3 py-1.5 rounded-2xl bg-surface-2 border border-line text-center">
@@ -72,17 +73,17 @@ export default function ProfileView() {
           </Card>
         </div>
 
-        <div className="pt-4">
+        <div>
           <Segmented<'stats' | 'settings'>
             value={activeTab}
             onChange={setActiveTab}
             options={[
-              { value: 'stats', label: 'İstatistik & Analiz' },
+              { value: 'stats', label: 'İstatistikler' },
               { value: 'settings', label: 'Ayarlar' },
             ]}
           />
         </div>
-      </PageHeader>
+
 
       {/* ─── İSTATİSTİKLER SEKMESİ ───────────────────────────────────────────── */}
       {activeTab === 'stats' && (

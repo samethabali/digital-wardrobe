@@ -260,3 +260,24 @@ test('kişisel renk analizi: açık rıza gerekir, fotoğraf saklanmaz, sonuç p
   const removed = await t.api('DELETE', '/api/style/personal-color', { token: u.token });
   assert.equal(removed.body.personalColor, null);
 });
+
+test('beraber kombin detayı: iki tarafın parçaları; yalnızca katılımcılar görebilir; görüldü işareti', async () => {
+  const a = await userWithWardrobe('DetayA', {}, 'a_');
+  const b = await userWithWardrobe('DetayB', { isPrivate: true }, 'b_');
+  const outsider = await t.createUser('Disaridaki');
+  await t.models.CollabSessionModel.create({
+    id: 'c_detay', initiatorId: a.id, initiatorName: 'DetayA', friendId: b.id, friendName: 'DetayB', event: 'Randevu',
+    myOutfit: [a.docs[0].id, a.docs[20].id], friendOutfit: [b.docs[1].id], compatibilityScore: 80, collabReason: 'x', styleHarmony: 'y',
+  });
+
+  const forFriend = await t.api('GET', '/api/collab/c_detay', { token: b.token });
+  assert.equal(forFriend.status, 200);
+  assert.deepEqual(forFriend.body.initiatorItems.map((i: any) => i.id).sort(), [a.docs[0].id, a.docs[20].id].sort());
+  assert.deepEqual(forFriend.body.friendItems.map((i: any) => i.id), [b.docs[1].id]);
+  assert.equal((await t.api('GET', '/api/collab/c_detay', { token: a.token })).status, 200, 'gizli profile rağmen başlatan görür');
+  assert.equal((await t.api('GET', '/api/collab/c_detay', { token: outsider.token })).status, 404);
+
+  assert.equal((await t.api('PATCH', '/api/collab/c_detay/seen', { token: a.token })).status, 403);
+  assert.equal((await t.api('PATCH', '/api/collab/c_detay/seen', { token: b.token })).status, 200);
+  assert.equal((await t.api('GET', '/api/collab/inbox', { token: b.token })).body.unreadCount, 0);
+});

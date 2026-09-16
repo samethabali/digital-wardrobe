@@ -16,7 +16,12 @@ interface EnrichState {
 
 interface WardrobeContextType {
   items: WardrobeItem[];
+  /** Tüm gardıroptaki parça sayısı (yüklenmiş sayfalardan bağımsız) */
   total: number;
+  /** Kategori → parça sayısı (tüm gardırop) */
+  categoryCounts: Record<string, number>;
+  /** Parça güncellendiğinde listeyi yeniden çekmeden yerinde değiştirir */
+  replaceItem: (item: WardrobeItem) => void;
   loading: boolean;
   page: number;
   hasMore: boolean;
@@ -38,6 +43,7 @@ export function WardrobeProvider({ children }: { children: ReactNode }) {
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const [total, setTotal] = useState(0);
+  const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({});
 
   const [enrichState, setEnrichState] = useState<EnrichState>({
     running: false, total: 0, current: 0, currentName: '', enriched: 0, done: false, message: ''
@@ -71,7 +77,8 @@ export function WardrobeProvider({ children }: { children: ReactNode }) {
         setItems(data.items || []);
       }
       setHasMore(data.hasMore);
-      setTotal(typeof data.total === 'number' ? data.total : 0);
+      setTotal(typeof data.wardrobeTotal === 'number' ? data.wardrobeTotal : typeof data.total === 'number' ? data.total : 0);
+      if (data.categoryCounts) setCategoryCounts(data.categoryCounts);
       setPage(data.page);
     } catch (error) {
       console.error('Failed to fetch wardrobe:', error);
@@ -81,8 +88,12 @@ export function WardrobeProvider({ children }: { children: ReactNode }) {
     }
   }, [token]);
 
+  const replaceItem = useCallback((updated: WardrobeItem) => {
+    setItems(prev => prev.map(item => (item.id === updated.id ? updated : item)));
+  }, []);
+
   const handleDeleteItem = async (id: string): Promise<boolean> => {
-    const ok = await askConfirm('Parçayı sil', 'Bu parça ve görseli kalıcı olarak silinecek; kayıtlı kombinlerden de çıkarılacak.');
+    const ok = await askConfirm('Parçayı sil', 'Bu parça ve görseli kalıcı olarak silinecek; kayıtlı kombinlerden de çıkarılacak.', 'Evet, sil');
     if (!ok || !token) return false;
     try {
       const response = await fetch(`/api/wardrobe/${encodeURIComponent(id)}`, {
@@ -91,7 +102,11 @@ export function WardrobeProvider({ children }: { children: ReactNode }) {
       });
       if (!response.ok) throw new Error();
       // Listeyi yeniden çekmeden anında güncelle (sayfalama konumu korunur)
-      setItems(prev => prev.filter(item => item.id !== id));
+      setItems(prev => {
+        const removed = prev.find(item => item.id === id);
+        if (removed) setCategoryCounts(counts => ({ ...counts, [removed.category]: Math.max(0, (counts[removed.category] || 1) - 1) }));
+        return prev.filter(item => item.id !== id);
+      });
       setTotal(prev => Math.max(0, prev - 1));
       notify('Parça silindi.', 'success');
       return true;
@@ -167,7 +182,7 @@ export function WardrobeProvider({ children }: { children: ReactNode }) {
   }, [token, fetchWardrobe]);
 
   return (
-    <WardrobeContext.Provider value={{ items, total, loading, page, hasMore, missingCount, enrichState, fetchWardrobe, handleEnrich, handleDeleteItem, setItems }}>
+    <WardrobeContext.Provider value={{ items, total, categoryCounts, replaceItem, loading, page, hasMore, missingCount, enrichState, fetchWardrobe, handleEnrich, handleDeleteItem, setItems }}>
       {children}
     </WardrobeContext.Provider>
   );

@@ -21,9 +21,8 @@ test('api/index.js güncel kaynaktan üretilmiş (npm run build)', async () => {
   assert.ok(fresh === committed, 'api/index.js kaynakla uyuşmuyor: "npm run build" çalıştırıp paketi commit et.');
 });
 
-test('sunucu paketinde gizli değer yok', () => {
-  const bundle = fs.readFileSync('api/index.js', 'utf8');
-  assert.ok(!/mongodb(\+srv)?:\/\/[^"'`\s]*:[^"'`\s]*@/.test(bundle), 'bağlantı adresinde şifre');
-  assert.ok(!/AIza[0-9A-Za-z_-]{20,}/.test(bundle), 'Gemini anahtarı');
-  assert.ok(!bundle.includes('FALLBACK_JWT_SECRET'), 'JWT yedek anahtarı');
+test('sunucu paketinde gizli değer yok (base64 ile gizlenmiş olanlar dahil)', async () => {
+  const { findEmbeddedSecrets } = await import('./helpers/secretScan.js');
+  const findings = findEmbeddedSecrets(fs.readFileSync('api/index.js', 'utf8'));
+  assert.deepEqual(findings, []);
 });

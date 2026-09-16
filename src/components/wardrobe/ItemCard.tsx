@@ -9,9 +9,11 @@ interface Props {
   onClick: () => void;
   selectable?: boolean;
   selected?: boolean;
+  /** Seçici panellerde küçük boy: tek satır ad, alt bilgi yok */
+  compact?: boolean;
 }
 
-export default React.memo(function ItemCard({ item, onClick, selectable, selected }: Props) {
+export default React.memo(function ItemCard({ item, onClick, selectable, selected, compact }: Props) {
   return (
     <button
       type="button"
@@ -23,7 +25,7 @@ export default React.memo(function ItemCard({ item, onClick, selectable, selecte
         <ItemImage item={item} className="aspect-[4/5]" />
         {selectable && (
           <span className={cx(
-            'absolute top-2.5 right-2.5 w-7 h-7 rounded-full border-2 flex items-center justify-center transition-colors',
+            'absolute top-2 right-2 w-7 h-7 rounded-full border-2 flex items-center justify-center transition-colors',
             selected ? 'bg-ink border-ink text-canvas' : 'bg-surface/80 border-surface backdrop-blur',
           )}>
             {selected && <Check className="w-4 h-4" strokeWidth={3} />}
@@ -36,11 +38,11 @@ export default React.memo(function ItemCard({ item, onClick, selectable, selecte
         )}
       </div>
       <div className="pt-2 px-0.5">
-        <p className="text-[14px] font-semibold text-ink truncate leading-snug">{item.name}</p>
-        <p className="text-[12px] text-ink-3 truncate">
+        <p className={cx('font-semibold text-ink truncate leading-snug', compact ? 'text-[12px]' : 'text-[14px]')}>{item.name}</p>
+        {!compact && <p className="text-[12px] text-ink-3 truncate">
           {CATEGORY_LABELS[item.category] || item.category}
           {item.color ? ` · ${item.color}` : ''}
-        </p>
+        </p>}
       </div>
     </button>
   );

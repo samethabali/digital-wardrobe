@@ -3,7 +3,7 @@ import { RequestError } from './engine/request.js';
 import { addDays, daysBetween, isValidLocalDate, localDate } from './time.js';
 import { cosine } from './ai/gemini.js';
 import { kmeans } from './embeddings.js';
-import { STYLE_LABELS } from '../shared/wardrobe.js';
+import { STYLE_LABELS, missingFields } from '../shared/wardrobe.js';
 import type { StyleCluster, WardrobeStats, WearLogEntry, WornItemStat } from '../shared/api.js';
 
 export const WEAR_LOG_MAX_AGE_DAYS = 365;
@@ -161,6 +161,12 @@ export function styleClusters(items: any[]): StyleCluster[] {
   return clusters.sort((a, b) => b.size - a.size);
 }
 
+function countBy(items: any[], key: (item: any) => string): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const item of items) counts[key(item)] = (counts[key(item)] || 0) + 1;
+  return counts;
+}
+
 export function computeWardrobeStats(items: any[], logs: { date: string; itemIds: string[] }[], today = localDate()): WardrobeStats {
   const wearable = items.filter(i => i.category !== 'makeup');
   const stats = wearable.map(toWornStat);
@@ -185,5 +191,12 @@ export function computeWardrobeStats(items: any[], logs: { date: string; itemIds
     wardrobeValue: priced.length ? Math.round(priced.reduce((sum, s) => sum + (s.price ?? 0), 0)) : null,
     styleClusters: styleClusters(items),
     embeddedItems: items.filter(i => Array.isArray(i.embedding) && i.embedding.length > 0).length,
+    byCategory: countBy(items, i => i.category || 'top'),
+    topColors: Object.entries(countBy(items.filter(i => i.color), i => String(i.color).trim().toLocaleLowerCase('tr-TR')))
+      .sort((a, b) => b[1] - a[1]).slice(0, 5).map(([color, count]) => ({ color, count })),
+    topStyles: Object.entries(countBy(items.filter(i => i.style), i => i.style))
+      .sort((a, b) => b[1] - a[1]).slice(0, 4).map(([style, count]) => ({ style, count })),
+    aiAnalyzed: items.filter(i => i.aiAnalyzed).length,
+    completeItems: items.filter(i => missingFields(i).length === 0).length,
   };
 }

@@ -205,6 +205,9 @@ test('istatistik hesabı: giyilmeyen, en az giyilen ve 90 gündür giyilmeyenler
   assert.deepEqual(stats.notWornIn90Days.map(s => s.id), ['b']);
   assert.equal(stats.costPerWear[0].costPerWear, 900);
   assert.deepEqual(stats.styleClusters, []);
+  assert.deepEqual(stats.byCategory, { top: 2, shoes: 1, makeup: 1 });
+  assert.equal(stats.aiAnalyzed, 0);
+  assert.equal(stats.completeItems, 0);
 });
 
 test('rıza gövdesi, stil profili, kişisel renk ve push aboneliği doğrulaması', () => {

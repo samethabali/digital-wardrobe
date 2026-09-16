@@ -154,5 +154,27 @@ export function socialRoutes(): express.Router {
     }
   });
 
+  // /api/collab/inbox ve /api/collab/sent'ten sonra tanımlanmalı (aksi halde :id onları yakalar)
+  // Beraber kombin detayı: iki tarafın parçaları tam bilgiyle (yalnızca iki katılımcı görebilir).
+  // Gizli profile geçmiş kullanıcının parçaları da görünür; kombin zaten iki kişi arasında paylaşılmıştı.
+  router.get('/api/collab/:id', authenticateToken, async (req: any, res) => {
+    try {
+      const session: any = await CollabSessionModel.findOne({ id: String(req.params.id) } as any).lean();
+      const isParticipant = session && [session.initiatorId?.toString(), session.friendId?.toString()].includes(req.user.id);
+      if (!session || !isParticipant) return res.status(404).json({ error: 'Beraber kombin bulunamadı.' });
+      const [initiatorItems, friendItems] = await Promise.all([
+        ItemModel.find({ userId: session.initiatorId, id: { $in: session.myOutfit || [] } } as any).lean(),
+        ItemModel.find({ userId: session.friendId, id: { $in: session.friendOutfit || [] } } as any).lean(),
+      ]);
+      res.json({
+        session: toSessionDTO(session),
+        initiatorItems: initiatorItems.map(toItemDTO),
+        friendItems: friendItems.map(toItemDTO),
+      });
+    } catch (err) {
+      sendError(res, err, 'Beraber kombin alınamadı.', 'Collab Detail');
+    }
+  });
+
   return router;
 }

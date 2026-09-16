@@ -27,7 +27,8 @@ function ItemRow({ items, value }: { items: WornItemStat[]; value: (s: WornItemS
 const formatDate = (date: string) =>
   new Date(`${date}T12:00:00`).toLocaleDateString('tr-TR', { weekday: 'short', day: 'numeric', month: 'long' });
 
-export default function WardrobeInsights() {
+/** onStats: istatistikler yüklendiğinde üst bileşene (genel özet kartları) iletilir; aynı veri iki kez istenmez. */
+export default function WardrobeInsights({ onStats }: { onStats?: (stats: WardrobeStats) => void }) {
   const { items, fetchWardrobe } = useWardrobe();
   const { notify, askConfirm } = useNotification();
   const [stats, setStats] = React.useState<WardrobeStats | null>(null);
@@ -44,6 +45,7 @@ export default function WardrobeInsights() {
         apiFetch<{ entries: WearLogEntry[] }>('/api/wear-log'),
       ]);
       setStats(s);
+      onStats?.(s);
       setEntries(log.entries);
       const known = new Set(items.map(i => i.id));
       const missing = Array.from(new Set(log.entries.flatMap(e => e.itemIds))).filter(id => !known.has(id));

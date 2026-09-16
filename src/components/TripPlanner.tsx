@@ -84,7 +84,6 @@ export default function TripPlanner({ onNotify }: Props) {
                 setLocation(loc);
                 setLocationLabel(lbl);
               }}
-              className="w-full justify-start h-12 px-4 text-sm bg-surface-2"
             />
           </div>
 

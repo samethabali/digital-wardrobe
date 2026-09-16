@@ -1,4 +1,5 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import type { RequestHandler } from 'express';
 import { ItemModel, OutfitModel, UserModel } from '../db.js';
 import { authenticateToken, byUser, rateLimit, RATE_LIMITS, sendError } from '../http.js';
@@ -14,11 +15,29 @@ import {
 } from '../itemFields.js';
 import { sanitizeContextSummary } from '../feedback.js';
 import { recordFeedback } from '../preferences.js';
-import { deriveWeatherMatch } from '../../shared/wardrobe.js';
+import { CATEGORIES, deriveWeatherMatch } from '../../shared/wardrobe.js';
 import type { SimilarItemDTO } from '../../shared/api.js';
 
 const newItemId = () => `item_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 const ITEM_ID = /^[\w.:-]{1,100}$/;
+
+/** Gardırop listesi filtreleri: kategori (izinli değerler) ve ad/renk/tür/kumaşta arama. */
+export function parseWardrobeQuery(query: any): { filter: Record<string, unknown> } | { error: string } {
+  const filter: Record<string, unknown> = {};
+  if (query?.category !== undefined && query.category !== '' && query.category !== 'all') {
+    if (typeof query.category !== 'string' || !(CATEGORIES as readonly string[]).includes(query.category)) return { error: 'Geçersiz kategori.' };
+    filter.category = query.category;
+  }
+  if (query?.q !== undefined && query.q !== '') {
+    if (typeof query.q !== 'string' || query.q.length > 60) return { error: 'Geçersiz arama.' };
+    // Türkçe büyük/küçük harf: İ/i ve I/ı eşleşsin
+    const escaped = query.q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/[iİ]/g, '[iİ]').replace(/[ıI]/g, '[ıI]');
+    const regex = { $regex: escaped, $options: 'i' };
+    filter.$or = ['name', 'color', 'subCategory', 'material'].map(field => ({ [field]: regex }));
+  }
+  return { filter };
+}
 
 function toSimilarDTO(similar: { item: any; similarity: number }[]): SimilarItemDTO[] {
   return similar.map(s => ({
@@ -48,11 +67,24 @@ export function wardrobeRoutes({ uploadMiddleware }: WardrobeRouteOptions): expr
       const page = Math.max(1, parseInt(req.query.page as string) || 1);
       const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 50));
       const skip = (page - 1) * limit;
-      const [total, items] = await Promise.all([
-        ItemModel.countDocuments({ userId: req.user.id } as any),
-        ItemModel.find({ userId: req.user.id } as any).skip(skip).limit(limit).sort({ _id: -1 } as any).lean(),
+      const listQuery = parseWardrobeQuery(req.query);
+      if ('error' in listQuery) return res.status(400).json({ error: listQuery.error });
+      const filter = { userId: req.user.id, ...listQuery.filter } as any;
+      const [total, items, counts] = await Promise.all([
+        ItemModel.countDocuments(filter),
+        ItemModel.find(filter).skip(skip).limit(limit).sort({ _id: -1 } as any).lean(),
+        // Kategori çiplerindeki sayılar tüm gardıroptan (yüklenmiş sayfadan değil)
+        ItemModel.aggregate([
+          { $match: { userId: new mongoose.Types.ObjectId(req.user.id) } },
+          { $group: { _id: '$category', count: { $sum: 1 } } },
+        ]),
       ]);
-      res.json({ items: items.map(toItemDTO), total, page, totalPages: Math.ceil(total / limit), hasMore: page * limit < total });
+      const categoryCounts = Object.fromEntries(counts.map((c: any) => [c._id || 'top', c.count]));
+      const wardrobeTotal = Object.values(categoryCounts).reduce((sum: number, n: any) => sum + n, 0);
+      res.json({
+        items: items.map(toItemDTO), total, wardrobeTotal, categoryCounts,
+        page, totalPages: Math.ceil(total / limit), hasMore: page * limit < total,
+      });
     } catch (err) {
       sendError(res, err, 'Gardırop alınamadı.', 'Wardrobe');
     }

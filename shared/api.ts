@@ -194,6 +194,12 @@ export interface WardrobeStats {
   wardrobeValue: number | null;
   styleClusters: StyleCluster[];
   embeddedItems: number;
+  /** Tüm gardırop üzerinden (sayfalamadan bağımsız) özetler */
+  byCategory: Record<string, number>;
+  topColors: { color: string; count: number }[];
+  topStyles: { style: string; count: number }[];
+  aiAnalyzed: number;
+  completeItems: number;
 }
 
 export interface SimilarItemDTO {

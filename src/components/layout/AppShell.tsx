@@ -4,6 +4,7 @@ import { Shirt, Layers, Sparkles, Compass, User } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../hooks/useTheme';
 import { apiFetch } from '../../services/api';
+import { COLLAB_SEEN_EVENT } from '../../services/events';
 import { Avatar, cx } from '../ui/primitives';
 
 const NAV = [
@@ -20,9 +21,16 @@ export default function AppShell() {
   const location = useLocation();
   const [unread, setUnread] = React.useState(0);
 
-  React.useEffect(() => {
+  const refreshUnread = React.useCallback(() => {
     apiFetch<{ unreadCount: number }>('/api/collab/inbox').then(d => setUnread(d.unreadCount || 0)).catch(() => undefined);
-  }, [location.pathname === '/kesfet']); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Sekme değişiminde ve bir beraber kombin görüldü işaretlendiğinde rozet yenilenir
+  React.useEffect(() => { refreshUnread(); }, [location.pathname, refreshUnread]);
+  React.useEffect(() => {
+    window.addEventListener(COLLAB_SEEN_EVENT, refreshUnread);
+    return () => window.removeEventListener(COLLAB_SEEN_EVENT, refreshUnread);
+  }, [refreshUnread]);
 
   React.useEffect(() => {
     window.scrollTo({ top: 0 });

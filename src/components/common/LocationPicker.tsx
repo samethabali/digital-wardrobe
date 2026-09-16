@@ -11,6 +11,8 @@ import { locationInputFor } from '../../services/location';
 import Sheet from '../ui/Sheet';
 import { Button, Chip, cx } from '../ui/primitives';
 import { Input } from '../ui/fields';
+import { useNotification } from '../../contexts/NotificationContext';
+import { useIsDesktop } from '../../hooks/useMediaQuery';
 
 const POPULAR_LOCATIONS: LocationSearchResult[] = [
   { label: 'Kadıköy, İstanbul', province: 'İstanbul', district: 'Kadıköy', lat: 40.9788, lon: 29.0827 },
@@ -26,9 +28,13 @@ interface Props {
   value?: LocationInput | string;
   onChange: (location: LocationInput, label: string) => void;
   className?: string;
+  /** chip: satır içi küçük düğme; field: form alanı genişliğinde */
+  variant?: 'chip' | 'field';
 }
 
-export default function LocationPicker({ label, onChange, className }: Props) {
+export default function LocationPicker({ label, onChange, className, variant = 'field' }: Props) {
+  const { notify } = useNotification();
+  const isDesktop = useIsDesktop();
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState('');
   const [selectedProvinceId, setSelectedProvinceId] = React.useState<number | null>(null);
@@ -59,8 +65,11 @@ export default function LocationPicker({ label, onChange, className }: Props) {
         onChange({ type: 'coords', lat, lon, label: display }, display);
         setOpen(false);
       },
-      () => {
+      (err) => {
         setDetectingGps(false);
+        notify(err.code === err.PERMISSION_DENIED
+          ? 'Konum izni verilmedi. Tarayıcı ayarlarından izin verebilir ya da listeden seçebilirsin.'
+          : 'Konumun bulunamadı. Listeden seçebilirsin.', 'info');
       },
       { timeout: 8000 },
     );
@@ -74,12 +83,13 @@ export default function LocationPicker({ label, onChange, className }: Props) {
         type="button"
         onClick={() => setOpen(true)}
         className={cx(
-          'inline-flex items-center gap-1.5 h-10 px-3.5 rounded-2xl bg-surface-2 hover:bg-surface border border-transparent hover:border-line text-[13px] font-semibold text-ink transition-colors',
+          'inline-flex items-center gap-2 rounded-2xl bg-surface-2 border border-transparent hover:border-line font-semibold text-ink transition-colors text-left',
+        variant === 'field' ? 'w-full h-12 px-4 text-[15px]' : 'h-10 px-3.5 text-[13px]',
           className,
         )}
       >
         <MapPin className="w-4 h-4 text-accent shrink-0" />
-        <span className="truncate max-w-[180px]">{label || 'Konum Seç'}</span>
+        <span className={cx('truncate', variant === 'chip' && 'max-w-[180px]')}>{label || 'Konum seç'}</span>
       </button>
 
       <Sheet
@@ -96,7 +106,7 @@ export default function LocationPicker({ label, onChange, className }: Props) {
             onChange={e => setQuery(e.target.value)}
             placeholder="İl veya ilçe ara (örn. Kadıköy, Bodrum, Ankara)..."
             leading={<Search className="w-4 h-4" />}
-            autoFocus
+            autoFocus={isDesktop}
           />
 
           {/* GPS Butonu */}
