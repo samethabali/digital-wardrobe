@@ -6,12 +6,25 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import multer from 'multer';
 import mongoose from 'mongoose';
-import { v2 as cloudinary } from 'cloudinary';
 import { CloudinaryStorage } from 'multer-storage-cloudinary';
-import { GoogleGenAI, Type } from '@google/genai';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { getRelevantFashionRules } from './fashionRules.js';
+
+import {
+  UserModel, ItemModel, OutfitModel, CollabSessionModel, RateLimitModel,
+  FeedbackEventModel, WearLogModel, PreferenceProfileModel, DailyPickModel,
+  deletePersonalizationData, connectToDatabase, setOnFirstConnect
+} from './backend/db.js';
+import {
+  cloudinary, getPublicIdFromUrl, getOwnedPublicId, downloadOwnImage, isOwnCloudinaryUrl
+} from './backend/cloudinary.js';
+import { generateOutfitsForUser } from './backend/engine/generate.js';
+import { analyzeCapsule } from './backend/engine/capsule.js';
+import { generateCollab } from './backend/engine/collab.js';
+import { analyzeClothingImage, applyAnalysisToItem, itemNeedsEnrichment } from './backend/vision.js';
+import { toEngineItem } from './backend/engine/items.js';
+import { resolveLocation, getWeather } from './backend/weather.js';
+import { modelsFor } from './backend/ai/models.js';
 
 dotenv.config();
 
@@ -19,62 +32,7 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ─── Gemini istemcisi ────────────────────────────────────────
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
-
-// Hız ve kalite dengesine göre öncelik sırasına dizilmiş güncel modeller
-const FALLBACK_MODELS = [
-  'models/gemini-2.5-flash',
-  'models/gemini-2.0-flash',
-  'models/gemini-2.0-flash-lite',   // Hafif ve hızlı alternatif
-  'models/gemini-3.1-flash-lite',  // En yeni lite sürüm
-  'models/gemini-3-flash-preview', // Yeni nesil önizleme
-  'models/gemini-flash-latest',
-  'models/gemini-flash-lite-latest',
-  'models/gemini-2.5-pro'
-];
-
-async function executeWithFallback<T>(fn: (modelName: string) => Promise<T>): Promise<T> {
-  let lastError = null;
-
-  for (let i = 0; i < FALLBACK_MODELS.length; i++) {
-    const currentModelName = FALLBACK_MODELS[i];
-    
-    try {
-      if (i > 0) console.log(`[AI Motoru] Fallback Deneniyor: ${currentModelName}`);
-      return await fn(currentModelName);
-    } catch (err: any) {
-      lastError = err;
-      
-      // 429 (Kota), 503 (Sunucu Yoğunluğu), veya 404/400 (Model Bulunamadı/Desteklenmiyor)
-      const isRateLimit = err?.status === 429 || err?.status === 503 || err?.message?.includes("429") || err?.message?.includes("quota");
-      const isNotFound = err?.status === 404 || err?.status === 400 || err?.message?.includes("not found") || err?.message?.includes("not supported");
-
-      if (isRateLimit || isNotFound) {
-        console.warn(`[UYARI] ${currentModelName} atlanıyor (Hata: ${err?.status || 'Bilinmiyor'} - ${isNotFound ? 'Model bulunamadı' : 'Limit/Yoğunluk'}). Bir sonraki modele geçiliyor...`);
-        
-        if (i === FALLBACK_MODELS.length - 1) {
-          console.error("[CRITICAL] Tüm AI modelleri denendi ancak hiçbiri yanıt veremedi!");
-          break;
-        }
-        continue;
-      } else {
-        // Beklenmeyen mantıksal bir hataysa direkt fırlat
-        throw err;
-      }
-    }
-  }
-
-  throw new Error("Yapay zeka asistanı şu an yanıt veremiyor (Modeller ulaşılamaz veya çok yoğun). Lütfen daha sonra tekrar dene.");
-}
-
-// ─── Cloudinary Config ───────────────────────────────────────
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
-});
-
+// ─── Cloudinary Config & Multer ──────────────────────────────
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: async (req: any, file) => {
@@ -95,91 +53,22 @@ const storage = new CloudinaryStorage({
 });
 const upload = multer({ storage: storage, limits: { fileSize: 15 * 1024 * 1024 } });
 
-// ─── MongoDB Setup ───────────────────────────────────────────
-const UserSchema = new mongoose.Schema({
-  email: { type: String, required: true, unique: true, index: true },
-  username: { type: String, required: true, unique: true, index: true },
-  passwordHash: { type: String, required: true },
-  name: { type: String, required: true },
-  isPrivate: { type: Boolean, default: false },
-  createdAt: { type: Date, default: Date.now }
-});
-const UserModel = mongoose.models.User || mongoose.model('User', UserSchema);
+// JWT Secret — ortam değişkeninde tanımlı olmak zorunda.
+function requireJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (!secret || secret.length < 32) {
+    throw new Error('[Config] JWT_SECRET ortam değişkeni tanımlı değil veya 32 karakterden kısa. Sunucu başlatılmadı.');
+  }
+  return secret;
+}
+const JWT_SECRET = requireJwtSecret();
 
-const ItemSchema = new mongoose.Schema({
-  id: String,
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
-  name: String,
-  category: String,
-  subCategory: String,
-  color: String,
-  material: String,
-  style: String,
-  pattern: String,
-  fit: String,
-  weatherMatch: [String],
-  imagePath: String,
-  attributes: mongoose.Schema.Types.Mixed,
-  aiAnalyzed: Boolean
-});
-const ItemModel = mongoose.models.Item || mongoose.model('Item', ItemSchema);
-
-const OutfitSchema = new mongoose.Schema({
-  id: String,
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
-  name: String,
-  items: [String],
-  stylingReason: String,
-  compatibilityScore: Number,
-  createdAt: { type: Date, default: Date.now }
-});
-const OutfitModel = mongoose.models.Outfit || mongoose.model('Outfit', OutfitSchema);
-
-const CollabSessionSchema = new mongoose.Schema({
-  id: { type: String, unique: true, index: true },
-  initiatorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
-  initiatorName: String,
-  friendId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
-  friendName: String,
-  event: String,
-  effort: Number,
-  mood: String,
-  myOutfit: [String],
-  friendOutfit: [String],
-  compatibilityScore: Number,
-  collabReason: String,
-  styleHarmony: String,
-  seenByFriend: { type: Boolean, default: false },
-  createdAt: { type: Date, default: Date.now }
-});
-const CollabSessionModel = mongoose.models.CollabSession || mongoose.model('CollabSession', CollabSessionSchema);
-
-// JWT Secret
-const JWT_SECRET = process.env.JWT_SECRET || 'aura_secret_key_123_change_me';
+// Çok kullanıcılı yapıya geçişten önce kalan sahipsiz kayıtların bağlanacağı hesap.
+const LEGACY_OWNER_EMAIL = 'samet@aura.com';
 
 // Veri Göçü (Migration) Scripti
 async function runMigration() {
   try {
-    const adminEmail = 'samet@aura.com';
-    let admin = await UserModel.findOne({ email: adminEmail } as any);
-    if (!admin) {
-      console.log('[Migration] samet@aura.com kullanıcısı oluşturuluyor...');
-      const passwordHash = await bcrypt.hash('Aura123!', 10);
-      admin = new UserModel({
-        email: adminEmail,
-        username: 'samet',
-        passwordHash,
-        name: 'Samet',
-        createdAt: new Date()
-      });
-      await admin.save();
-      console.log('[Migration] samet@aura.com başarıyla oluşturuldu.');
-    } else if (!(admin as any).username) {
-      (admin as any).username = 'samet';
-      await admin.save();
-      console.log('[Migration] samet@aura.com kullanıcısına default kullanıcı adı (samet) tanımlandı.');
-    }
-
     // Herhangi bir şekilde kullanıcı adı (username) olmayan kullanıcıları güncelle
     const usersWithoutUsername = await UserModel.find({ username: { $exists: false } } as any);
     for (const u of usersWithoutUsername) {
@@ -197,19 +86,27 @@ async function runMigration() {
       console.log(`[Migration] ${usersWithoutPrivacy.length} kullanıcının gizlilik ayarı varsayılan (false) yapıldı.`);
     }
 
-    // userId'si olmayan gardırop öğelerini güncelle
     const itemsWithoutUser = await ItemModel.find({ userId: { $exists: false } } as any);
+    const outfitsWithoutUser = await OutfitModel.find({ userId: { $exists: false } } as any);
+    if (itemsWithoutUser.length === 0 && outfitsWithoutUser.length === 0) return;
+
+    const legacyOwner = await UserModel.findOne({ email: LEGACY_OWNER_EMAIL } as any);
+    if (!legacyOwner) {
+      console.warn(`[Migration] ${LEGACY_OWNER_EMAIL} hesabı bulunamadı; sahipsiz kayıtlar bağlanmadan bırakıldı.`);
+      return;
+    }
+
+    // userId'si olmayan gardırop öğelerini güncelle
     if (itemsWithoutUser.length > 0) {
-      console.log(`[Migration] ${itemsWithoutUser.length} adet sahipsiz gardırop öğesi admin kullanıcısına bağlanıyor...`);
-      await ItemModel.updateMany({ userId: { $exists: false } } as any, { $set: { userId: admin._id } });
+      console.log(`[Migration] ${itemsWithoutUser.length} adet sahipsiz gardırop öğesi ${LEGACY_OWNER_EMAIL} hesabına bağlanıyor...`);
+      await ItemModel.updateMany({ userId: { $exists: false } } as any, { $set: { userId: legacyOwner._id } });
       console.log('[Migration] Gardırop öğeleri başarıyla güncellendi.');
     }
 
     // userId'si olmayan kombinleri güncelle
-    const outfitsWithoutUser = await OutfitModel.find({ userId: { $exists: false } } as any);
     if (outfitsWithoutUser.length > 0) {
-      console.log(`[Migration] ${outfitsWithoutUser.length} adet sahipsiz kombin admin kullanıcısına bağlanıyor...`);
-      await OutfitModel.updateMany({ userId: { $exists: false } } as any, { $set: { userId: admin._id } });
+      console.log(`[Migration] ${outfitsWithoutUser.length} adet sahipsiz kombin ${LEGACY_OWNER_EMAIL} hesabına bağlanıyor...`);
+      await OutfitModel.updateMany({ userId: { $exists: false } } as any, { $set: { userId: legacyOwner._id } });
       console.log('[Migration] Kombinler başarıyla güncellendi.');
     }
   } catch (err) {
@@ -217,71 +114,15 @@ async function runMigration() {
   }
 }
 
-let cachedConnection: typeof mongoose | null = null;
-
-async function connectToDatabase() {
-  if (cachedConnection && mongoose.connection.readyState === 1) {
-    return cachedConnection;
-  }
-
-  const uri = process.env.MONGODB_URI || '';
-  if (!uri) {
-    throw new Error('MONGODB_URI tanımlı değil.');
-  }
-
-  // Serverless için bağlantıyı önbelleğe al
-  cachedConnection = await mongoose.connect(uri);
-  console.log('[MongoDB] Yeni bağlantı başarıyla kuruldu.');
-  
-  // İlk bağlantıda veritabanı göçünü (migration) arka planda asenkron çalıştır
-  runMigration();
-  
-  return cachedConnection;
-}
-
-// Sunucu ilk başladığında asenkron olarak bağlantıyı tetikle (Localhost hızlandırması için)
+// İlk bağlantıda veritabanı göçünü (migration) arka planda çalıştır
+setOnFirstConnect(runMigration);
 connectToDatabase().catch(err => console.error('[MongoDB] İlk bağlantı hatası:', err));
-
 
 // ─── Gemini Vision: Görsel Analizi ────────────────────────────────────────
 async function analyzeImageData(base64: string, mimeType: string) {
   try {
-    const response = await executeWithFallback(async (modelName) => {
-      return await ai.models.generateContent({
-        model: modelName,
-        contents: [
-          { inlineData: { mimeType, data: base64 } },
-          {
-            text: `Bu bir giysi veya aksesuar fotoğrafı. Lütfen analiz et ve aşağıdaki JSON formatında Türkçe bilgi ver.
-Kategori seçenekleri: top (üst giysi), bottom (alt giysi), outerwear (dış giyim/kaban/ceket), shoes (ayakkabı), makeup (makyaj), accessory (aksesuar)
-Stil seçenekleri: casual, formal, sport, elegant, bohemian
-Hava seçenekleri (array): sunny, cloudy, rainy, snowy, hot, cold
-Desen seçenekleri (pattern): düz, çizgili, kareli, çiçekli, grafik, noktalı vb.
-Kesim seçenekleri (fit): dar, normal, bol, oversize`
-          }
-        ],
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              name:        { type: Type.STRING },
-              category:    { type: Type.STRING },
-              subCategory: { type: Type.STRING },
-              color:       { type: Type.STRING },
-              material:    { type: Type.STRING },
-              style:       { type: Type.STRING },
-              pattern:     { type: Type.STRING },
-              fit:         { type: Type.STRING },
-              weatherMatch:{ type: Type.ARRAY, items: { type: Type.STRING } }
-            },
-            required: ['name', 'category', 'subCategory', 'color', 'style', 'weatherMatch']
-          }
-        }
-      });
-    });
-
-    return JSON.parse(response.text);
+    const { analysis } = await analyzeClothingImage(base64, mimeType);
+    return analysis;
   } catch (err) {
     console.error('[Vision] Analiz hatası:', err);
     return null;
@@ -290,12 +131,10 @@ Kesim seçenekleri (fit): dar, normal, bol, oversize`
 
 async function analyzeImageUrl(url: string) {
   try {
-    const response = await fetch(url);
-    const buffer = await response.arrayBuffer();
-    const base64 = Buffer.from(buffer).toString('base64');
-    const mimeType = response.headers.get('content-type') || 'image/jpeg';
-    return analyzeImageData(base64, mimeType);
-  } catch(e) {
+    const downloaded = await downloadOwnImage(url);
+    if (!downloaded) return null;
+    return analyzeImageData(downloaded.base64, downloaded.mimeType);
+  } catch (e) {
     console.error('[Vision] Fotoğraf indirilirken hata:', e);
     return null;
   }
@@ -304,28 +143,14 @@ async function analyzeImageUrl(url: string) {
 // ─── Weather API (Open-Meteo) ─────────────────────────────────────────────
 async function getWeatherForLocation(location: string): Promise<string | null> {
   try {
-    const geoRes = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=tr&format=json`);
-    const geoData = await geoRes.json();
-    if (!geoData.results || geoData.results.length === 0) return null;
-    const { latitude, longitude, name, country } = geoData.results[0];
-    const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current_weather=true`);
-    const weatherData = await weatherRes.json();
-    if (weatherData.current_weather) {
-      const { temperature, windspeed, weathercode } = weatherData.current_weather;
-      const weatherMap: Record<number, string> = {
-        0: 'Açık, Güneşli', 1: 'Çoğunlukla Açık', 2: 'Parçalı Bulutlu', 3: 'Kapalı/Bulutlu',
-        45: 'Sisli', 48: 'Kırağılı Sis', 51: 'Hafif Çisenti', 53: 'Orta Çisenti', 55: 'Yoğun Çisenti',
-        61: 'Hafif Yağmurlu', 63: 'Orta Şiddetli Yağmurlu', 65: 'Şiddetli Yağmurlu',
-        71: 'Hafif Kar Yağışlı', 73: 'Orta Şiddetli Kar Yağışlı', 75: 'Yoğun Kar Yağışlı',
-        95: 'Gök Gürültülü Fırtına', 96: 'Hafif Dolu ile Fırtına', 99: 'Şiddetli Dolu ile Fırtına'
-      };
-      const desc = weatherMap[weathercode] || 'Bilinmiyor';
-      return `${name}, ${country}: ${temperature}°C, ${desc}`;
-    }
+    const resolved = await resolveLocation(location);
+    if (!resolved) return null;
+    const weather = await getWeather(resolved);
+    return `${resolved.label}: ${weather.temperatureC}°C, ${weather.condition}`;
   } catch (error) {
     console.error('[Weather API] Hata:', error);
+    return null;
   }
-  return null;
 }
 
 // ─── Server ───────────────────────────────────────────────────────────────
@@ -390,7 +215,7 @@ function authenticateToken(req: any, res: express.Response, next: express.NextFu
     return res.status(401).json({ error: 'Erişim engellendi. Token eksik.' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err: any, user: any) => {
+  jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }, (err: any, user: any) => {
     if (err) {
       return res.status(403).json({ error: 'Geçersiz veya süresi dolmuş token.' });
     }
@@ -399,48 +224,82 @@ function authenticateToken(req: any, res: express.Response, next: express.NextFu
   });
 }
 
-// Cloudinary public_id helper
-function getPublicIdFromUrl(url: string): string | null {
-  try {
-    const parts = url.split('/upload/');
-    if (parts.length < 2) return null;
-    
-    let publicIdWithExtension = parts[1];
-    if (publicIdWithExtension.startsWith('v')) {
-      const slashIndex = publicIdWithExtension.indexOf('/');
-      if (slashIndex !== -1) {
-        publicIdWithExtension = publicIdWithExtension.substring(slashIndex + 1);
-      }
-    }
-    
-    if (publicIdWithExtension.includes('digital_wardrobe/')) {
-      const idx = publicIdWithExtension.indexOf('digital_wardrobe/');
-      publicIdWithExtension = publicIdWithExtension.substring(idx);
-    }
+// ─── İstek Sınırlama (Rate Limit) ───────────────────────────────────────────
+// Sayaçlar MongoDB'de tutulur; böylece Vercel'deki tüm serverless örnekleri aynı sınırı paylaşır.
+const MINUTE = 60 * 1000;
+const HOUR = 60 * MINUTE;
 
-    const dotIndex = publicIdWithExtension.lastIndexOf('.');
-    if (dotIndex !== -1) {
-      return publicIdWithExtension.substring(0, dotIndex);
-    }
-    return publicIdWithExtension;
-  } catch (e) {
-    console.error('[Cloudinary] Extract public_id error:', e);
-    return null;
+const RATE_LIMITS = {
+  register:        { max: 10, windowMs: HOUR },       // IP başına
+  login:           { max: 10, windowMs: 15 * MINUTE }, // IP + e-posta başına
+  generateOutfit:  { max: 60, windowMs: HOUR },       // Kullanıcı başına (aşağıdakilerin hepsi)
+  analyzeImage:    { max: 60, windowMs: HOUR },
+  upload:          { max: 60, windowMs: HOUR },
+  capsuleAnalysis: { max: 20, windowMs: HOUR },
+  collabGenerate:  { max: 20, windowMs: HOUR },
+  enrich:          { max: 5,  windowMs: HOUR },
+};
+
+// Vercel istemci IP'sini x-real-ip başlığına kendisi yazar; istemci bu değeri taklit edemez.
+function getClientIp(req: express.Request): string {
+  const realIp = req.headers['x-real-ip'];
+  if (process.env.VERCEL && typeof realIp === 'string' && realIp) return realIp;
+  return req.socket.remoteAddress || 'unknown';
+}
+
+async function incrementRateCounter(key: string, expiresAt: Date) {
+  const update = { $inc: { count: 1 }, $setOnInsert: { expiresAt } };
+  const options = { upsert: true, returnDocument: 'after' } as any;
+  try {
+    return await RateLimitModel.findOneAndUpdate({ key } as any, update, options);
+  } catch (err: any) {
+    // Aynı pencerenin ilk iki isteği eşzamanlı gelirse biri E11000 alır; kayıt artık var, tekrar denemek yeterli.
+    if (err?.code === 11000) return await RateLimitModel.findOneAndUpdate({ key } as any, update, options);
+    throw err;
   }
 }
 
-// ─── Teşhis Hattı ───────────────────────────────────────────
-app.get('/api/debug-models', async (req, res) => {
-  try {
-    const models = await ai.models.list();
-    res.json({ models });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
+function rateLimit(bucket: string, limit: { max: number; windowMs: number }, getIdentity: (req: any) => string) {
+  return async (req: any, res: express.Response, next: express.NextFunction) => {
+    const windowStart = Math.floor(Date.now() / limit.windowMs) * limit.windowMs;
+    const windowEnd = windowStart + limit.windowMs;
+    try {
+      const counter: any = await incrementRateCounter(`${bucket}:${getIdentity(req)}:${windowStart}`, new Date(windowEnd));
+      if (counter.count > limit.max) {
+        const retryAfterSec = Math.ceil((windowEnd - Date.now()) / 1000);
+        res.setHeader('Retry-After', String(retryAfterSec));
+        return res.status(429).json({ error: `Çok fazla istek gönderdin. Lütfen ${Math.ceil(retryAfterSec / 60)} dakika sonra tekrar dene.` });
+      }
+      next();
+    } catch (err) {
+      console.error(`[RateLimit] ${bucket} sayacı güncellenemedi:`, err);
+      res.status(503).json({ error: 'İstek şu an işlenemiyor. Lütfen biraz sonra tekrar dene.' });
+    }
+  };
+}
+
+const byUser = (req: any) => req.user.id;
+const byIp = (req: any) => getClientIp(req);
+const byIpAndEmail = (req: any) => `${getClientIp(req)}:${String(req.body?.email || '').trim().toLowerCase()}`;
+
+// ─── Teşhis Hattı (Sadece Localhost) ─────────────────────────
+// Canlıda kapalı: kimlik doğrulaması yok.
+if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+  app.get('/api/debug-models', async (_req, res) => {
+    try {
+      res.json({
+        stylist: modelsFor('stylist'),
+        vision: modelsFor('vision'),
+        light: modelsFor('light')
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+}
 
 // ─── AUTH ENDPOINTS ──────────────────────────────────────────────────────────
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', rateLimit('register', RATE_LIMITS.register, byIp), async (req, res) => {
   try {
     let { email, password, name, username } = req.body;
     if (!email || !password || !name || !username) {
@@ -505,7 +364,7 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', rateLimit('login', RATE_LIMITS.login, byIpAndEmail), async (req, res) => {
   try {
     let { email, password } = req.body;
     if (!email || !password) {
@@ -636,7 +495,7 @@ app.delete('/api/auth/profile', authenticateToken, async (req: any, res) => {
     // 1) Görselleri bul
     const items = await ItemModel.find({ userId } as any);
     const publicIds = items
-      .map(item => getPublicIdFromUrl(item.imagePath))
+      .map(item => getOwnedPublicId(item.imagePath, userId))
       .filter(Boolean) as string[];
 
     // 2) Cloudinary'den görselleri sil
@@ -649,9 +508,10 @@ app.delete('/api/auth/profile', authenticateToken, async (req: any, res) => {
       }
     }
 
-    // 3) MongoDB'den kıyafetleri ve kombinleri sil
+    // 3) MongoDB'den kıyafetleri, kombinleri ve kişiselleştirme/geri bildirim verilerini sil
     await ItemModel.deleteMany({ userId } as any);
     await OutfitModel.deleteMany({ userId } as any);
+    await deletePersonalizationData(userId);
 
     // 4) Kullanıcıyı sil
     await UserModel.deleteOne({ _id: userId } as any);
@@ -722,143 +582,65 @@ app.get('/api/users/explore/:userId/wardrobe', authenticateToken, async (req: an
 // ─── COLLAB (BERABER KOMBİN) ENDPOINTS ─────────────────────────────────────
 
 // POST /api/collab/generate — İki gardırobu AI ile eşleştirip collab session oluştur
-app.post('/api/collab/generate', authenticateToken, async (req: any, res) => {
+app.post('/api/collab/generate', authenticateToken, rateLimit('collab', RATE_LIMITS.collabGenerate, byUser), async (req: any, res) => {
   try {
     const { friendUserId, event, effort, mood, ignoreWeather, location } = req.body;
     if (!friendUserId) return res.status(400).json({ error: 'Arkadaş ID\'si gereklidir.' });
 
-    // Arkadaşın profilini kontrol et
-    const friendUser = await UserModel.findOne({ _id: friendUserId } as any);
-    if (!friendUser) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
-    if ((friendUser as any).isPrivate) {
+    const initiator = await UserModel.findOne({ _id: req.user.id } as any);
+    if (!initiator) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+
+    const friend = await UserModel.findOne({ _id: friendUserId } as any);
+    if (!friend) return res.status(404).json({ error: 'Arkadaş bulunamadı.' });
+    if ((friend as any).isPrivate) {
       return res.status(403).json({ error: 'Bu kullanıcının profili gizlidir.' });
     }
 
-    // Kendi gardırobunu çek
-    const myItems = await ItemModel.find({ userId: req.user.id } as any);
-    if (myItems.length < 3) {
-      return res.status(400).json({ error: 'Beraber kombin için en az 3 kıyafete ihtiyaç var. Lütfen gardırobuna parça ekle.' });
-    }
-
-    // Arkadaşın gardırobunu çek
-    const friendItems = await ItemModel.find({ userId: friendUserId } as any);
-    if (friendItems.length < 3) {
-      return res.status(400).json({ error: 'Arkadaşının gardırobunda yeterli kıyafet yok (en az 3 gerekli).' });
-    }
-
-    // Hava durumu (opsiyonel)
-    let liveWeatherStr = 'Dikkate alınacak (canlı veri alınamadı)';
-    if (!ignoreWeather && location) {
-      const liveWeather = await getWeatherForLocation(location);
-      if (liveWeather) liveWeatherStr = `CANLI VERİ: ${liveWeather}`;
-    }
-
-    // Veri temizliği
-    const sanitize = (items: any[], owner: 'me' | 'friend') =>
-      items.map((i: any) => ({
-        owner,
-        id: i.id,
-        category: i.category,
-        subCategory: i.subCategory,
-        color: i.color,
-        material: i.material,
-        style: i.style,
-        pattern: i.pattern,
-        fit: i.fit,
-        weatherMatch: i.weatherMatch
-      }));
-
-    const allItems = [
-      ...sanitize(myItems, 'me'),
-      ...sanitize(friendItems, 'friend')
-    ].sort(() => Math.random() - 0.5);
-
-    const systemInstruction = `Sen elit bir moda stilisti ve çift stil danışmanısın. İki farklı kişinin gardırop parçalarından, birbirleriyle beraber çıkacakları bir etkinlik için AYRI AYRI uyumlu kombinler oluşturmak senin görevin.
-
-KURALLAR:
-1. Her gardırop listesinde 'owner' alanı 'me' olanlar birinci kişiye, 'friend' olanlar ikinci kişiye aittir.
-2. 'myOutfit' dizisi: SADECE owner='me' olan parçaların ID'lerini içerir.
-3. 'friendOutfit' dizisi: SADECE owner='friend' olan parçaların ID'lerini içerir.
-4. Her iki kombin de kendi içinde eksiksiz olmalı (üst + alt + ayakkabı minimum).
-5. İKİ KOMBİN BİRBİRİYLE RENK VE STİL AÇISINDAN UYUMLU OLMALI. Bu en kritik kuraldır.
-6. 'styleHarmony': İki kombini bir araya getiren stil/renk prensibini kısa ve etkileyici bir cümleyle özetle (Örn: 'Monokromatik Siyah Sinerji', 'Tonal Bej Uyumu', 'Bold Renk Bloklaması').
-7. 'collabReason': Her iki kombinin neden uyumlu göründüğünü, kullandığın renk teorisini ve stil prensiplerini profesyonel, ilham verici Türkçe ile açıkla (3-4 cümle).
-8. 'compatibilityScore': İki kombinin birbirleriyle uyumunu 100 üzerinden tam sayı olarak puan ver.
-9. MUTLAKA belirtilen JSON şemasında yanıt ver.`;
-
-    const userPrompt = `ETKİNLİK: ${event || 'Gündelik'}
-EFOR SEVİYESİ: ${effort || 5}/10
-RUH HALİ: ${mood || 'Rahat'}
-HAVA DURUMU: ${ignoreWeather ? 'Önemsiz (Kapalı mekan)' : liveWeatherStr}
-
-BİRİNCİ KİŞİ (me): ${req.user.name}
-İKİNCİ KİŞİ (friend): ${(friendUser as any).name}
-
-TÜM PARÇALAR (owner alanına dikkat et):
-${JSON.stringify(allItems)}`;
-
-    const response = await executeWithFallback(async (modelName) => {
-      return await ai.models.generateContent({
-        model: modelName,
-        contents: userPrompt,
-        config: {
-          systemInstruction,
-          temperature: 0.8,
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              myOutfit:           { type: Type.ARRAY, items: { type: Type.STRING } },
-              friendOutfit:       { type: Type.ARRAY, items: { type: Type.STRING } },
-              compatibilityScore: { type: Type.INTEGER },
-              collabReason:       { type: Type.STRING },
-              styleHarmony:       { type: Type.STRING }
-            },
-            required: ['myOutfit', 'friendOutfit', 'compatibilityScore', 'collabReason', 'styleHarmony']
-          }
-        }
-      });
+    const collabResult = await generateCollab(initiator, friend, {
+      event, effort, mood, ignoreWeather, location
     });
 
-    const aiResult = JSON.parse(response.text);
-
-    // MongoDB'ye kaydet
     const collabId = `collab_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const session = new CollabSessionModel({
       id: collabId,
-      initiatorId: req.user.id,
-      initiatorName: req.user.name,
-      friendId: friendUserId,
-      friendName: (friendUser as any).name,
+      initiatorId: initiator._id,
+      initiatorName: initiator.name,
+      friendId: friend._id,
+      friendName: friend.name,
       event: event || 'Gündelik',
       effort: effort || 5,
       mood: mood || 'Rahat',
-      myOutfit: aiResult.myOutfit,
-      friendOutfit: aiResult.friendOutfit,
-      compatibilityScore: aiResult.compatibilityScore,
-      collabReason: aiResult.collabReason,
-      styleHarmony: aiResult.styleHarmony,
+      myOutfit: collabResult.myOutfit,
+      friendOutfit: collabResult.friendOutfit,
+      compatibilityScore: collabResult.compatibilityScore,
+      collabReason: collabResult.collabReason,
+      styleHarmony: collabResult.styleHarmony,
       seenByFriend: false,
       createdAt: new Date()
     });
     await session.save();
 
-    console.log(`[Collab] ${req.user.name} + ${(friendUser as any).name} → ${collabId} (Uyum: %${aiResult.compatibilityScore})`);
+    console.log(`[Collab] ${initiator.name} + ${friend.name} → ${collabId} (Uyum: %${collabResult.compatibilityScore})`);
 
     res.json({
       success: true,
       collabId,
-      myOutfit: aiResult.myOutfit,
-      friendOutfit: aiResult.friendOutfit,
-      compatibilityScore: aiResult.compatibilityScore,
-      collabReason: aiResult.collabReason,
-      styleHarmony: aiResult.styleHarmony,
-      friendName: (friendUser as any).name,
-      initiatorName: req.user.name
+      session,
+      myOutfit: collabResult.myOutfit,
+      friendOutfit: collabResult.friendOutfit,
+      myItems: collabResult.myItems,
+      friendItems: collabResult.friendItems,
+      compatibilityScore: collabResult.compatibilityScore,
+      collabReason: collabResult.collabReason,
+      styleHarmony: collabResult.styleHarmony,
+      friendName: friend.name,
+      initiatorName: initiator.name,
+      weather: collabResult.weather,
+      warnings: collabResult.warnings
     });
   } catch (err: any) {
     console.error('[Collab Generate] Hata:', err);
-    res.status(500).json({ error: 'Beraber kombin oluşturulamadı.', details: err instanceof Error ? err.message : 'Unknown' });
+    res.status(err?.status || 500).json({ error: 'Beraber kombin oluşturulamadı.', details: err instanceof Error ? err.message : 'Unknown' });
   }
 });
 
@@ -980,18 +762,10 @@ app.post('/api/wardrobe/scan', authenticateToken, async (_req, res) => {
   res.json({ success: true, added: 0, message: 'Tarama artık desteklenmiyor (Bulut tabanlı)' });
 });
 
-app.post('/api/wardrobe/enrich', authenticateToken, async (req: any, res) => {
+app.post('/api/wardrobe/enrich', authenticateToken, rateLimit('enrich', RATE_LIMITS.enrich, byUser), async (req: any, res) => {
   try {
     const items = await ItemModel.find({ userId: req.user.id } as any);
-
-    // Üst/alt/dış giyimde desen ve kesim de eksik sayılır
-    const isIncomplete = (item: any) => {
-      const needsFitPattern = ['top', 'bottom', 'outerwear'].includes(item.category);
-      return !item.color || !item.style || !item.material || !item.subCategory ||
-        (needsFitPattern && (!item.pattern || !item.fit));
-    };
-
-    const targets = items.filter(isIncomplete);
+    const targets = items.filter(itemNeedsEnrichment);
 
     if (targets.length === 0) {
       return res.json({ success: true, enriched: 0, message: 'Tüm öğeler zaten eksiksiz.' });
@@ -1009,26 +783,21 @@ app.post('/api/wardrobe/enrich', authenticateToken, async (req: any, res) => {
     for (const item of targets) {
       sendEvent({ type: 'progress', current: enriched + failed + 1, total: targets.length, name: item.name });
       try {
-        const analysis = await analyzeImageUrl(item.imagePath!);
-        if (analysis) {
-          item.name = item.name || analysis.name;
-          item.category = item.category === 'top' ? analysis.category : item.category;
-          item.subCategory = item.subCategory || analysis.subCategory;
-          item.color = item.color || analysis.color;
-          item.material = item.material || analysis.material || '';
-          item.style = item.style || analysis.style;
-          item.pattern = item.pattern || analysis.pattern || '';
-          item.fit = item.fit || analysis.fit || '';
-          if (!item.weatherMatch?.length || (item.weatherMatch.length === 2 && item.weatherMatch[0] === 'sunny')) {
-            item.weatherMatch = analysis.weatherMatch;
-          }
-          item.aiAnalyzed = true;
+        const downloaded = item.imagePath ? await downloadOwnImage(item.imagePath) : null;
+        if (downloaded) {
+          const { analysis } = await analyzeClothingImage(downloaded.base64, downloaded.mimeType);
+          applyAnalysisToItem(item, analysis);
+          item.enrichAttemptedAt = new Date();
           await item.save();
           enriched++;
           sendEvent({ type: 'item_done', id: item.id, name: item.name, category: item.category, color: item.color });
-        } else { failed++; }
-      } catch { failed++; }
-      await new Promise(r => setTimeout(r, 1500));
+        } else {
+          failed++;
+        }
+      } catch {
+        failed++;
+      }
+      await new Promise(r => setTimeout(r, 1200));
     }
     sendEvent({ type: 'done', enriched, failed, message: `${enriched} öğe tamamlandı, ${failed} başarısız.` });
     res.end();
@@ -1038,229 +807,129 @@ app.post('/api/wardrobe/enrich', authenticateToken, async (req: any, res) => {
   }
 });
 
-app.post('/api/analyze-image-base64', authenticateToken, async (req, res) => {
+app.post('/api/analyze-image-base64', authenticateToken, rateLimit('analyze', RATE_LIMITS.analyzeImage, byUser), async (req, res) => {
   try {
     const { base64, mimeType } = req.body;
     if (!base64 || !mimeType) return res.status(400).json({ error: 'base64 ve mimeType gerekli' });
-    const analysis = await analyzeImageData(base64, mimeType);
-    if (!analysis) return res.status(500).json({ error: 'Analiz başarısız' });
-    res.json({ success: true, analysis });
-  } catch (err) {
-    res.status(500).json({ error: 'Analiz hatası' });
+    const { analysis, model } = await analyzeClothingImage(base64, mimeType);
+    res.json({ success: true, analysis, ...analysis, model });
+  } catch (err: any) {
+    console.error('[Vision Base64] Hata:', err);
+    res.status(err?.status || 500).json({ error: 'Analiz hatası', details: err instanceof Error ? err.message : 'Unknown' });
   }
 });
 
-app.get('/api/capsule-analysis', authenticateToken, async (req: any, res) => {
+app.get('/api/capsule-analysis', authenticateToken, rateLimit('capsule', RATE_LIMITS.capsuleAnalysis, byUser), async (req: any, res) => {
   try {
-    const targetCategory = req.query.category as string || 'any';
-    const items = await ItemModel.find({ userId: req.user.id } as any);
+    const targetCategory = (req.query.category as any) || 'any';
+    const docs = await ItemModel.find({ userId: req.user.id } as any);
     
-    if (items.length < 5) {
+    if (docs.length < 5) {
       return res.json({
         insufficient: true,
         message: 'Kapsül gardırop simülasyonu yapabilmek için dolabında en az 5 adet kıyafet bulunmalıdır. Lütfen biraz daha kıyafet ekle!'
       });
     }
 
-    const sanitizedItems = items.map((i: any) => ({
-      id: i.id,
-      category: i.category,
-      subCategory: i.subCategory,
-      color: i.color,
-      material: i.material,
-      style: i.style,
-      pattern: i.pattern,
-      fit: i.fit
-    }));
-
-    let categoryRestrictionInstruction = '';
-    if (targetCategory && targetCategory !== 'any') {
-      const categoryLabelsTR: Record<string, string> = {
-        top: 'Üst Giyim (top)',
-        bottom: 'Alt Giyim (bottom)',
-        outerwear: 'Dış Giyim (outerwear)',
-        shoes: 'Ayakkabı (shoes)',
-        accessory: 'Aksesuar (accessory)'
-      };
-      const labelTR = categoryLabelsTR[targetCategory] || targetCategory;
-      categoryRestrictionInstruction = `\nKESİNLİKLE UYULMASI GEREKEN KATEGORİ KISITI: Önerdiğin 'kilit eksik parça' (Suggested Item) KESİNLİKLE '${targetCategory}' (${labelTR}) kategorisinde olmak zorundadır. Başka hiçbir kategoriden kıyafet veya aksesuar öneremezsin. Kombin artış simülasyonunu da sadece bu kategoriye özel bir parçanın dolaba eklenmesi durumuna göre hesapla.`;
-    }
-
-    const systemInstruction = `Sen elit bir kapsül gardırop uzmanı, moda analisti ve kişisel stil danışmanısın.
-Görevin, kullanıcının gardırobundaki parçaları inceleyerek, dolabın potansiyelini katlayacak tek bir eksik anahtar parçayı (anchor item) bulmak ve bunun simülasyonunu yapmaktır.
-${categoryRestrictionInstruction}
-
-ANALİZ ADIMLARI:
-1. Gardırop listesini incele: Renk dağılımı nasıl (örn. çok fazla siyah mı var)? Hangi kategoride (üst, alt, ayakkabı, dış giyim) eksiklik veya dengesizlik var?
-2. Mevcut gardıroptaki parçalarla teorik olarak oluşturulabilecek maksimum uyumlu kombin sayısını tahmin et (Örn: 12).
-3. Dolaba eklendiğinde **kombinasyon potansiyelini maksimuma çıkaracak** tam 1 adet 'kilit eksik parça' (Suggested Item) belirle (Örn: "Bej Blazer Ceket", "Siyah Trençkot", "Beyaz Deri Sneaker"). Bu parça mevcut parçalarla en çok renk ve stil uyumu yakalayacak çok yönlü bir parça olmalıdır. (Kategori kısıtına KESİNLİKLE uymalısın!)
-4. Bu kilit parça eklendikten sonra oluşacak yeni toplam kombin potansiyelini hesapla (Örn: 34). Bu sayı mevcut sayının en az 2 katı civarında ve gerçekçi olmalıdır.
-5. Bu parçanın neden seçildiğini, dolaptaki hangi parçaları canlandıracağını ve nasıl kombinleneceğini profesyonel, motive edici ve elit bir Türkçe ile açıkla (3-4 cümle).
-6. MUTLAKA belirtilen JSON şemasında yanıt ver. Sayısal alanlar KESİNLİKLE tam sayı (INTEGER) olmalıdır.`;
-
-    const userPrompt = `KONUM / HEDEF KATEGORİ: ${targetCategory}
-GARDIROP LİSTESİ (JSON):
-${JSON.stringify(sanitizedItems)}`;
-
-    const response = await executeWithFallback(async (modelName) => {
-      return await ai.models.generateContent({
-        model: modelName,
-        contents: userPrompt,
-        config: {
-          systemInstruction: systemInstruction,
-          temperature: 0.7,
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              currentOutfitCount:  { type: Type.INTEGER },
-              projectedOutfitCount: { type: Type.INTEGER },
-              suggestedItem: {
-                type: Type.OBJECT,
-                properties: {
-                  name:     { type: Type.STRING },
-                  category: { type: Type.STRING },
-                  reason:   { type: Type.STRING }
-                },
-                required: ['name', 'category', 'reason']
-              }
-            },
-            required: ['currentOutfitCount', 'projectedOutfitCount', 'suggestedItem']
-          }
-        }
-      });
-    });
-
-    res.json(JSON.parse(response.text));
+    const items = docs.map(toEngineItem);
+    const result = await analyzeCapsule(items, targetCategory);
+    res.json(result);
   } catch (err: any) {
     console.error('[Server] Capsule Analysis Error:', err);
     res.status(500).json({ error: 'Kapsül gardırop analizi oluşturulamadı', details: err instanceof Error ? err.message : 'Unknown' });
   }
 });
 
-app.post('/api/generate-outfit', authenticateToken, async (req: any, res) => {
+app.post('/api/generate-outfit', authenticateToken, rateLimit('generate', RATE_LIMITS.generateOutfit, byUser), async (req: any, res) => {
   try {
-    const { request } = req.body;
-    
-    // Yüksek Performans: İstemciden büyük gardırop dizisini göndermek yerine doğrudan MongoDB'den tümünü çekiyoruz.
-    // Bu sayede AI, kullanıcının gardırobundaki tüm parçalara (sayfalama sınırına takılmadan) erişebilir.
-    const items = await ItemModel.find({ userId: req.user.id } as any);
-    
-    // Veri temizliği (Payload Sanitization) - Gereksiz özellikleri (imagePath, db meta vs) çıkararak token tasarrufu sağlarız
-    const sanitizedItems = items.map((i: any) => ({
-      id: i.id,
-      category: i.category,
-      subCategory: i.subCategory,
-      color: i.color,
-      material: i.material,
-      style: i.style,
-      pattern: i.pattern,
-      fit: i.fit,
-      weatherMatch: i.weatherMatch
-    }));
+    const rawRequest = req.body.request || req.body;
+    const user = await UserModel.findOne({ _id: req.user.id } as any);
+    if (!user) return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
 
-    // Çözüm A: Sıralama eğilimini (Primacy Bias) kırmak için gardırop listesini rastgele karıştırıyoruz
-    const shuffledItems = [...sanitizedItems].sort(() => Math.random() - 0.5);
-
-    let liveWeatherStr = 'Dikkate alınacak (Önemsiz değil, ancak canlı veri alınamadı)';
-    if (!request.ignoreWeather && request.location) {
-      const liveWeather = await getWeatherForLocation(request.location);
-      if (liveWeather) liveWeatherStr = `CANLI VERİ: ${liveWeather}`;
-    }
-
-    // ─── RAG Moda Bilgi Bankasından Kuralları Çekme ────────────────────────────
-    const matchedRules = getRelevantFashionRules(request, liveWeatherStr);
-    const fashionRulesString = matchedRules.map((rule, idx) => `${idx + 1}. ${rule}`).join('\n');
-
-    // ─── Tekrarlamayı Kırmak İçin Yaratıcı Açı (Creative Seed) Seçimi ─────────
-    const creativeAngles = [
-      "doku kontrastlarını ön plana çıkarmak (örn. deri ceket ile pürüzsüz saten veya yün triko ile keten eşleşmesi)",
-      "cesur ama dengeli renk kontrastları (renk bloklama - color blocking) oluşturmak",
-      "minimalist, çabasız ve son derece prestijli bir şıklık yakalamak",
-      "monokromatik veya ton-sür-ton geçişlerle göz alıcı bir dikey derinlik sunmak",
-      "ayakkabılar veya aksesuarlar aracılığıyla patlayıcı ve zengin bir vurgu (accent color) rengi eklemek",
-      "vücut proporsiyonunu 1/3 üst, 2/3 alt giyim şeklinde göstererek bacak boyunu uzatmak",
-      "klasik çizgilerin sportif ve konforlu dokunuşlarla dinamik harmanını (Smart Casual) yansıtmak"
-    ];
-    const selectedAngle = creativeAngles[Math.floor(Math.random() * creativeAngles.length)];
-
-    const systemInstruction = `Sen elit bir moda tasarımcısı, haute couture stilist ve kişisel stil danışmanısın.
-Görevin, kullanıcının gardırobundaki parçaları kullanarak, verilen etkinlik, hava durumu ve stil bağlamına en uygun, estetik olarak kusursuz bir kombin oluşturmaktır.
-
-KURALLAR:
-1. Yalnızca verilen GARDIROP LİSTESİ'ndeki parçaları (ID'lerine göre) kullanabilirsin. Asla listede olmayan bir eşya uydurma.
-2. KATMANLAMA VE KATEGORİ MANTIĞI:
-   - Standart bir kombin KESİNLİKLE 1 Üst (top) + 1 Alt (bottom) + 1 Ayakkabı (shoes) gerektirir. Üst (top) veya Alt (bottom) parçalarından birini eksik bırakmak KESİNLİKLE yasaktır.
-   - ÖZEL DURUM 1 (Elbise/Tulum): Eğer seçtiğin parça tek parça bir giysi (category = 'top' veya 'bottom' olup subCategory 'elbise', 'tulum' vb. ise), bu parça hem üst hem alt yerine geçer. Bu durumda kombine fazladan bir "bottom" veya "top" EKLEME.
-   - ÖZEL DURUM 2 (Dış Giyim / Outerwear): Canlı hava durumu soğuk, rüzgarlı veya yağmurluysa, veya stil katmanlama gerektiriyorsa KESİNLİKLE uygun bir "outerwear" (dış giyim, kaban, mont, ceket, hırka) ekle.
-   - Kombine opsiyonel olarak uygun "accessory" ve "makeup" parçaları ekleyebilirsin.
-3. HAVA DURUMU UYUMU:
-   - Canlı hava durumunu KESİNLİKLE dikkate al. Parçaların "weatherMatch" etiketleriyle hava koşullarını eşleştir.
-4. KİLİTLİ/ZORUNLU PARÇALAR (Required Items) VE DİNAMİK YENİLEME MANTIĞI:
-   - Eğer kullanıcı zorunlu parçalar seçmişse (requiredItems), bunları kombine KESİNLİKLE DAHİL ET.
-   - ÖNEMLİ TEKRAR ENGELİ: Eğer bazı parçalar kilitliyse (requiredItems), bu parçaları koru ancak kilitlenmeyen DİĞER parçaları KESİNLİKLE değiştirerek tamamen yeni ve farklı bir kombinasyona dönüştür. Kilitli parça dışındaki parçaların eski kombinle tamamen aynı kalması KESİNLİKLE kabul edilemez.
-5. YAKIN ZAMANDA ÖNERİLEN KOMBİNLERİN ENGELLENMESİ:
-   - 'YAKIN ZAMANDA ÖNERİLEN KOMBİNLER' başlığı altında listelenen ID gruplarının birebir aynısını KESİNLİKLE tekrar önerme. O ID setlerinin birebir aynısını seçmek KESİNLİKLE yasaktır. En az bir veya birkaç parçayı değiştirerek farklı ve yepyeni kombinasyonlar üret.
-6. AÇIKLAMA KALİTESİ VE ANALİZ (stylingReason):
-   - Neden bu parçaları seçtiğini, kullanıcının kişisel stil kimliğine ve hava durumuna nasıl uyduğunu açıkla. Açıklamanda KESİNLİKLE uyguladığın renk teorisini (örn. 60-30-10 kuralı, kontrast veya monokrom) ve silüet dengesini (örn. dar-bol kontrastı, tucked-in bacak boyu) profesyonel, ilham verici ve elit bir Türkçe ile açıkla (3-4 cümle).
-7. UYUMLULUK PUANI (compatibilityScore):
-   - 100 üzerinden bir TAM SAYI (INTEGER) olmalıdır (Örn: 85, 92, 98). Kesinlikle 1-10 arası ondalıklı puan (Örn: 9.5 veya 10.0) dönme, doğrudan 100 üzerinden yüzde oranı temsil eden bir tam sayı dön.
-8. DİNAMİK STİL ODAĞI: Kombini yaparken şu yaratıcı odağı / tasarımı özellikle temel al: "${selectedAngle}".
-9. MUTLAKA belirtilen JSON şemasında yanıt ver.`;
-
-    // Son kombinleri listeleme
-    let recentOutfitsStr = 'Yok';
-    if (request.recentOutfits && request.recentOutfits.length > 0) {
-      recentOutfitsStr = request.recentOutfits.map((ids: string[], idx: number) => `Kombin ${idx + 1}: [${ids.join(', ')}]`).join('\n');
-    }
-
-    const userPrompt = `KONUM: ${request.location}
-ETKİNLİK: ${request.event}
-EFOR/HAREKET SEVİYESİ: ${request.effort}/10
-RUH HALİ: ${request.mood || 'Belirtilmedi'}
-KİŞİSEL BAĞLAM/STİL KİMLİĞİ: ${request.personalContext || 'Belirtilmedi'}
-ÖZEL STİL TERCİHLERİ: ${request.styleTags?.join(', ') || 'Belirtilmedi'}
-HAVA DURUMU: ${request.ignoreWeather ? 'Önemsiz (Kapalı mekan)' : liveWeatherStr}
-${request.requiredItems?.length ? `ZORUNLU PARÇALAR (Kesinlikle Kullan): ${request.requiredItems.join(', ')}\n` : ''}${request.excludedItems?.length ? `YASAKLI PARÇALAR (Kesinlikle Kullanma): ${request.excludedItems.join(', ')}\n` : ''}
-YAKIN ZAMANDA ÖNERİLEN VE TEKRARLANMAMASI GEREKEN KOMBİNLER:
-${recentOutfitsStr}
-
-DİNAMİK MODA VE RENK KURALLARI (RAG):
-${fashionRulesString}
-
-GARDIROP LİSTESİ (JSON):
-${JSON.stringify(shuffledItems)}`;
-
-    const response = await executeWithFallback(async (modelName) => {
-      return await ai.models.generateContent({
-        model: modelName,
-        contents: userPrompt,
-        config: {
-          systemInstruction: systemInstruction,
-          temperature: 0.85, // Yenilik ve yaratıcılık için sıcaklığı biraz daha artırdık
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              selectedItems:     { type: Type.ARRAY, items: { type: Type.STRING } },
-              stylingReason:     { type: Type.STRING },
-              compatibilityScore:{ type: Type.INTEGER } // Kesinlikle INTEGER olarak zorladık
-            },
-            required: ['selectedItems', 'stylingReason', 'compatibilityScore']
-          }
-        }
-      });
-    });
-
-    res.json(JSON.parse(response.text));
+    const result = await generateOutfitsForUser(user, rawRequest, { mode: 'full' });
+    res.json(result);
   } catch (err: any) {
     console.error('[Server] Generate Outfit Error:', err);
-    const is429 = err?.status === 429;
-    res.status(is429 ? 429 : 500).json({ error: is429 ? 'Kota sınırı' : 'Kombin oluşturulamadı', details: err instanceof Error ? err.message : 'Unknown' });
+    const status = err?.status || (err?.message?.includes('gardırobuna') ? 422 : 500);
+    res.status(status).json({
+      error: err?.message || 'Kombin oluşturulamadı',
+      details: err instanceof Error ? err.message : 'Unknown'
+    });
   }
 });
 
-app.post('/api/wardrobe/upload', authenticateToken, upload.single('image'), async (req: any, res) => {
+// ─── Geri Bildirim ve KVKK Uç Noktaları ────────────────────────────────────
+app.post('/api/feedback', authenticateToken, async (req: any, res) => {
+  try {
+    const { type, generationId, itemIds, itemId, reason, note, context } = req.body;
+    if (!type) return res.status(400).json({ error: 'type gerekli' });
+
+    const user = await UserModel.findOne({ _id: req.user.id } as any);
+    if (!user) return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
+
+    const event = new FeedbackEventModel({
+      userId: req.user.id,
+      type,
+      generationId,
+      itemIds,
+      itemId,
+      reason,
+      note,
+      context,
+      createdAt: new Date()
+    });
+    await event.save();
+
+    // Kullanıcı bir kombini giydiğini belirttiyse WearLog kaydet ve parçaların giyilme sayısını artır
+    if (type === 'worn' && Array.isArray(itemIds) && itemIds.length > 0) {
+      const todayStr = new Date().toISOString().split('T')[0];
+      const wearLog = new WearLogModel({
+        userId: req.user.id,
+        date: todayStr,
+        itemIds,
+        source: 'suggestion',
+        createdAt: new Date()
+      });
+      await wearLog.save();
+
+      await ItemModel.updateMany(
+        { id: { $in: itemIds }, userId: req.user.id } as any,
+        { $inc: { wearCount: 1 }, $set: { lastWornAt: new Date() } }
+      );
+    }
+
+    res.json({ success: true, eventId: event._id });
+  } catch (err) {
+    console.error('[Feedback] Hata:', err);
+    res.status(500).json({ error: 'Geri bildirim kaydedilemedi' });
+  }
+});
+
+app.post('/api/auth/consents', authenticateToken, async (req: any, res) => {
+  try {
+    const { personalization } = req.body;
+    const update: any = {
+      'consents.updatedAt': new Date(),
+    };
+    if (personalization !== undefined) {
+      update['consents.personalization'] = {
+        granted: Boolean(personalization),
+        at: new Date()
+      };
+    }
+    const updatedUser = await UserModel.findOneAndUpdate(
+      { _id: req.user.id } as any,
+      { $set: update },
+      { returnDocument: 'after' } as any
+    );
+    res.json({ success: true, consents: (updatedUser as any)?.consents });
+  } catch (err) {
+    console.error('[Consents] Hata:', err);
+    res.status(500).json({ error: 'Rıza ayarları kaydedilemedi' });
+  }
+});
+
+app.post('/api/wardrobe/upload', authenticateToken, rateLimit('upload', RATE_LIMITS.upload, byUser), upload.single('image'), async (req: any, res) => {
   try {
     const file = req.file;
     if (!file) return res.status(400).json({ error: 'Dosya eksik' });
@@ -1311,13 +980,11 @@ app.delete('/api/wardrobe/:id', authenticateToken, async (req: any, res) => {
       return res.status(404).json({ error: 'Öğe bulunamadı' });
     }
 
-    // Cloudinary'den görseli sil
-    if (item.imagePath) {
-      const publicId = getPublicIdFromUrl(item.imagePath);
-      if (publicId) {
-        console.log(`[Cloudinary] Görsel siliniyor: ${publicId}`);
-        await cloudinary.uploader.destroy(publicId);
-      }
+    // Cloudinary'den görseli sil (yalnızca kullanıcının kendi klasöründeyse)
+    const publicId = getOwnedPublicId(item.imagePath, req.user.id);
+    if (publicId) {
+      console.log(`[Cloudinary] Görsel siliniyor: ${publicId}`);
+      await cloudinary.uploader.destroy(publicId);
     }
 
     await ItemModel.deleteOne({ id: req.params.id, userId: req.user.id } as any);
@@ -1328,12 +995,62 @@ app.delete('/api/wardrobe/:id', authenticateToken, async (req: any, res) => {
   }
 });
 
+// ─── Güncelleme Alanı Beyaz Listeleri ──────────────────────────────────────
+// İstemciden gelen gövde asla doğrudan veritabanına verilmez. userId, imagePath, id, aiAnalyzed gibi
+// alanlar yalnızca sunucu tarafından yazılır; aksi halde kayıt başka kullanıcıya taşınabilir ya da
+// imagePath üzerinden başka kullanıcının görseli sildirilebilir.
+type UpdatePick = { update: Record<string, unknown> } | { error: string };
+
+function pickStringFields(body: any, fields: Record<string, number>, update: Record<string, unknown>): string | null {
+  for (const [field, maxLength] of Object.entries(fields)) {
+    const value = body?.[field];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== 'string' || value.length > maxLength) return `Geçersiz alan: ${field}`;
+    update[field] = value;
+  }
+  return null;
+}
+
+function isStringArray(value: unknown, maxItems: number, maxLength: number): value is string[] {
+  return Array.isArray(value) && value.length <= maxItems &&
+    value.every(v => typeof v === 'string' && v.length <= maxLength);
+}
+
+function pickItemUpdate(body: any): UpdatePick {
+  const update: Record<string, unknown> = {};
+  const error = pickStringFields(body, {
+    name: 200, category: 50, subCategory: 100, color: 100, material: 100, style: 50, pattern: 100, fit: 50
+  }, update);
+  if (error) return { error };
+
+  if (body?.weatherMatch !== undefined && body?.weatherMatch !== null) {
+    if (!isStringArray(body.weatherMatch, 10, 30)) return { error: 'Geçersiz alan: weatherMatch' };
+    update.weatherMatch = body.weatherMatch;
+  }
+  return { update };
+}
+
+function pickOutfitUpdate(body: any): UpdatePick {
+  const update: Record<string, unknown> = {};
+  const error = pickStringFields(body, { name: 200, stylingReason: 2000 }, update);
+  if (error) return { error };
+
+  if (body?.items !== undefined && body?.items !== null) {
+    if (!isStringArray(body.items, 50, 100)) return { error: 'Geçersiz alan: items' };
+    update.items = body.items;
+  }
+  return { update };
+}
+
 app.put('/api/wardrobe/:id', authenticateToken, async (req: any, res) => {
   try {
+    const picked = pickItemUpdate(req.body);
+    if ('error' in picked) return res.status(400).json({ error: picked.error });
+
     const updated = await ItemModel.findOneAndUpdate(
       { id: req.params.id, userId: req.user.id } as any,
-      req.body,
-      { new: true } as any
+      { $set: picked.update },
+      { returnDocument: 'after' } as any
     );
     if (!updated) return res.status(404).json({ error: 'Bulunamadı' });
     res.json({ success: true, item: updated });
@@ -1380,10 +1097,13 @@ app.delete('/api/outfits/:id', authenticateToken, async (req: any, res) => {
 
 app.put('/api/outfits/:id', authenticateToken, async (req: any, res) => {
   try {
+    const picked = pickOutfitUpdate(req.body);
+    if ('error' in picked) return res.status(400).json({ error: picked.error });
+
     const updated = await OutfitModel.findOneAndUpdate(
       { id: req.params.id, userId: req.user.id } as any,
-      req.body,
-      { new: true } as any
+      { $set: picked.update },
+      { returnDocument: 'after' } as any
     );
     if (!updated) return res.status(404).json({ error: 'Bulunamadı' });
     res.json({ success: true, outfit: updated });

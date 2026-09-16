@@ -17,7 +17,7 @@ import { useWardrobe } from './contexts/WardrobeContext';
 import { WardrobeItem, StylistRequest, SavedOutfit, CollabResult, ExploreProfile } from './types';
 import { generateOutfit } from './services/stylistService';
 import { CATEGORY_LABELS } from './constants/wardrobe';
-import { Sparkles, Plus, RefreshCw, Wand2, CheckCircle2, Save, Trash2, Menu, X, Zap, AlertCircle, Fingerprint, ChevronDown, ChevronUp, Shirt, LayoutGrid, BarChart2, Lock, Unlock, Sun, Moon, Edit3, Eye, EyeOff, LogOut, User, Users } from 'lucide-react';
+import { Sparkles, Plus, RefreshCw, Wand2, CheckCircle2, Save, Trash2, Menu, X, Zap, AlertCircle, Fingerprint, ChevronDown, ChevronUp, Shirt, LayoutGrid, BarChart2, Lock, Unlock, Sun, Moon, Edit3, Eye, EyeOff, LogOut, User, Users, ThumbsDown, CloudSun } from 'lucide-react';
 
 export default function App() {
   return (
@@ -51,11 +51,8 @@ function Dashboard() {
   const [mobilePlannerOpen, setMobilePlannerOpen] = React.useState(false);
   const [isMobileDrawerOpen, setIsMobileDrawerOpen] = React.useState(false);
 
-  const [result, setResult] = React.useState<{
-    selectedItems: string[];
-    stylingReason: string;
-    compatibilityScore: number;
-  } | null>(null);
+  const [result, setResult] = React.useState<any | null>(null);
+  const [selectedOutfitIndex, setSelectedOutfitIndex] = React.useState(0);
   const [isResultVisible, setIsResultVisible] = React.useState(true);
   const [lastRequest, setLastRequest] = React.useState<StylistRequest | null>(null);
   const [lockedItems, setLockedItems] = React.useState<string[]>([]);
@@ -231,29 +228,80 @@ function Dashboard() {
     }
   };
 
-  const selectedItemsDetails = React.useMemo(() =>
-    result ? items.filter(item => result.selectedItems.includes(item.id)) : [],
-    [result, items]);
+  const currentOutfit = React.useMemo(() => {
+    if (!result) return null;
+    if (result.outfits && result.outfits.length > 0) {
+      return result.outfits[selectedOutfitIndex] || result.outfits[0];
+    }
+    return {
+      id: 'legacy',
+      itemIds: result.selectedItems || [],
+      items: items.filter(item => (result.selectedItems || []).includes(item.id)),
+      title: 'AI Tavsiyesi',
+      reason: result.stylingReason || '',
+      score: result.compatibilityScore || 85,
+      breakdown: null
+    };
+  }, [result, selectedOutfitIndex, items]);
+
+  const selectedItemsDetails = React.useMemo(() => {
+    if (!currentOutfit) return [];
+    if (currentOutfit.items && currentOutfit.items.length > 0) {
+      return currentOutfit.items;
+    }
+    return items.filter(item => currentOutfit.itemIds.includes(item.id));
+  }, [currentOutfit, items]);
+
+  const handleFeedback = async (type: 'worn' | 'disliked') => {
+    if (!result || !currentOutfit) return;
+    try {
+      const token = localStorage.getItem('aura_token');
+      await fetch('/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({
+          type,
+          generationId: result.generationId,
+          itemIds: currentOutfit.itemIds
+        })
+      });
+      if (type === 'worn') {
+        notify('✨ Harika seçim! Giyim günlüğüne kaydedildi.', 'success');
+      } else {
+        notify('Geri bildirimin kaydedildi, gelecek önerilerde dikkate alınacak.', 'info');
+      }
+    } catch {
+      // sessiz hata
+    }
+  };
 
   const handleReplaceItem = (itemId: string) => {
-    if (!lastRequest || !result) return;
+    if (!lastRequest || !currentOutfit) return;
 
     // Değişmesini istemediğimiz (kalan) parçaları requiredItems'a ekle
-    const itemsToKeep = result.selectedItems.filter(id => id !== itemId);
-    const newRequired = Array.from(new Set([...(lastRequest.requiredItems || []), ...itemsToKeep]));
+    const itemsToKeep = currentOutfit.itemIds.filter((id: string) => id !== itemId);
+    const newRequired = Array.from(new Set([...(lastRequest.requiredItems || []), ...lockedItems, ...itemsToKeep]));
 
-    // Değişmesini istediğimiz parçayı excludedItems'a ekle
     const newRequest = {
       ...lastRequest,
-      excludedItems: [...(lastRequest.excludedItems || []), itemId],
-      requiredItems: newRequired
+      lockedItems: lockedItems,
+      requiredItems: newRequired,
+      excludedItems: Array.from(new Set([...(lastRequest.excludedItems || []), itemId])),
     };
 
     handleGenerate(newRequest);
   };
 
   const handleReroll = () => {
-    if (lastRequest) handleGenerate(lastRequest);
+    if (!lastRequest) return;
+    // Yenilemede kilitli parçalar korunur, hariç tutulan parçalar sıfırlanır (yepyeni alternatifler)
+    const newRequest = {
+      ...lastRequest,
+      lockedItems: lockedItems,
+      requiredItems: lockedItems,
+      excludedItems: [],
+    };
+    handleGenerate(newRequest);
   };
 
   const handleOpenCollabWith = (profile: ExploreProfile) => {
@@ -716,22 +764,34 @@ function Dashboard() {
                     exit={{ opacity: 0, y: -20 }}
                     className={`mb-8 md:mb-12 bg-indigo-50 dark:bg-indigo-900/10 border border-indigo-100 dark:border-indigo-500/20 rounded-3xl p-4 md:p-8 overflow-hidden transition-all duration-500`}
                   >
-                    <div className="flex items-center justify-between mb-6">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
                       <div className="flex items-center gap-3">
-                        <div className="bg-indigo-600 p-2 rounded-lg">
+                        <div className="bg-indigo-600 p-2.5 rounded-2xl shadow-md shadow-indigo-500/20">
                           <Sparkles className="w-5 h-5 text-white" />
                         </div>
-                        <h3 className="text-xl font-semibold text-indigo-900 dark:text-indigo-100">AI Tavsiyesi</h3>
+                        <div>
+                          <h3 className="text-xl font-bold text-indigo-950 dark:text-indigo-100">
+                            {currentOutfit?.title || 'AI Tavsiyesi'}
+                          </h3>
+                          {result?.weather && (
+                            <div className="flex items-center gap-1.5 text-xs text-text-secondary mt-0.5">
+                              <CloudSun className="w-3.5 h-3.5 text-amber-500" />
+                              <span>{result.weather.locationLabel} &bull; {Math.round(result.weather.temperatureC)}°C, {result.weather.condition}</span>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2 sm:gap-3">
-                        {isResultVisible && result && (
-                          <div className="hidden sm:block bg-secondary px-4 py-2 rounded-full border border-border-color">
-                            <span className="text-sm font-bold text-indigo-600 dark:text-indigo-400">%{result?.compatibilityScore || 0} Uyum</span>
+                      <div className="flex items-center gap-2 sm:gap-3 self-end sm:self-auto">
+                        {isResultVisible && (
+                          <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm px-4 py-2 rounded-full border border-indigo-200 dark:border-indigo-500/30 shadow-sm">
+                            <span className="text-sm font-bold bg-gradient-to-r from-indigo-600 to-violet-600 bg-clip-text text-transparent">
+                              %{currentOutfit?.score || result?.compatibilityScore || 0} Uyum
+                            </span>
                           </div>
                         )}
                         <button
                           onClick={() => setIsResultVisible(!isResultVisible)}
-                          className="flex items-center gap-2 px-4 py-2 bg-secondary border border-border-color text-indigo-600 dark:text-indigo-400 rounded-xl text-xs font-bold hover:bg-primary transition-all"
+                          className="flex items-center gap-2 px-4 py-2 bg-secondary border border-border-color text-indigo-600 dark:text-indigo-400 rounded-xl text-xs font-bold hover:bg-primary transition-all shadow-sm"
                         >
                           {isResultVisible ? (
                             <><EyeOff className="w-4 h-4" /><span>Gizle</span></>
@@ -749,8 +809,34 @@ function Dashboard() {
                           animate={{ opacity: 1 }}
                           exit={{ opacity: 0 }}
                         >
+                          {/* Alternatif Kombin Seçenekleri */}
+                          {result?.outfits && result.outfits.length > 1 && (
+                            <div className="flex items-center gap-2 mb-6 overflow-x-auto pb-1 scrollbar-none">
+                              {result.outfits.map((outfit: any, idx: number) => {
+                                const isSelected = selectedOutfitIndex === idx;
+                                return (
+                                  <button
+                                    key={outfit.id || idx}
+                                    onClick={() => setSelectedOutfitIndex(idx)}
+                                    className={`px-4 py-2.5 rounded-2xl text-xs font-bold transition-all flex items-center gap-2 whitespace-nowrap ${
+                                      isSelected
+                                        ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30 ring-2 ring-indigo-400/40'
+                                        : 'bg-white dark:bg-gray-800 text-text-secondary hover:text-indigo-600 dark:hover:text-indigo-300 border border-border-color'
+                                    }`}
+                                  >
+                                    <span>{outfit.title || `Kombin ${idx + 1}`}</span>
+                                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
+                                      isSelected ? 'bg-indigo-500 text-white' : 'bg-secondary text-text-secondary'
+                                    }`}>
+                                      %{outfit.score}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
 
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
                             {selectedItemsDetails.map(item => (
                               <div key={item.id} className="bg-secondary p-3 rounded-2xl border border-border-color shadow-sm relative group transition-colors">
                                 <div className="aspect-square bg-primary rounded-xl mb-3 overflow-hidden relative">
@@ -792,51 +878,119 @@ function Dashboard() {
                             ))}
                           </div>
 
-                          <div className="bg-secondary/50 backdrop-blur-sm p-6 rounded-2xl border border-border-color mb-6 transition-colors shadow-inner">
-                            <p className="text-sm text-text-primary leading-relaxed italic">"{result?.stylingReason || 'Bu kombin senin için özenle seçildi.'}"</p>
+                          <div className="bg-secondary/50 backdrop-blur-sm p-5 rounded-2xl border border-border-color mb-6 transition-colors shadow-inner">
+                            <p className="text-sm text-text-primary leading-relaxed italic">
+                              "{currentOutfit?.reason || result?.stylingReason || 'Bu kombin senin için özenle seçildi.'}"
+                            </p>
                           </div>
 
-                          <div className="flex justify-end gap-3 border-t border-indigo-100 dark:border-indigo-500/10 pt-4 mt-2">
-                            <button
-                              onClick={handleReroll}
-                              disabled={isGenerating}
-                              className="flex items-center gap-2 px-5 py-2 bg-white dark:bg-gray-800 border border-indigo-200 dark:border-indigo-500/30 text-indigo-600 dark:text-indigo-400 rounded-xl text-sm font-semibold hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-all disabled:opacity-50"
-                            >
-                              <RefreshCw className={`w-4 h-4 ${isGenerating ? 'animate-spin' : ''}`} />
-                              Yeniden Üret
-                            </button>
-                            <button
-                              onClick={async () => {
-                                const name = await ask('Kombin İsmi', 'Favori Kombinim');
-                                if (!name) return;
-                                try {
-                                  const token = localStorage.getItem('aura_token');
-                                  const res = await fetch('/api/outfits', {
-                                    method: 'POST',
-                                    headers: { 
-                                      'Content-Type': 'application/json',
-                                      'Authorization': `Bearer ${token}`
-                                    },
-                                    body: JSON.stringify({
-                                      name,
-                                      items: result?.selectedItems || [],
-                                      stylingReason: result?.stylingReason || '',
-                                      compatibilityScore: result?.compatibilityScore || 0
-                                    })
-                                  });
-                                  if (res.ok) {
-                                    notify('Kombin kaydedildi!', 'success');
-                                    fetchOutfits();
-                                  } else throw new Error();
-                                } catch {
-                                  notify('Kombin kaydedilemedi', 'error');
-                                }
-                              }}
-                              className="flex items-center gap-2 px-5 py-2 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 transition-all shadow-md shadow-indigo-500/20"
-                            >
-                              <Save className="w-4 h-4" />
-                              Kombini Kaydet
-                            </button>
+                          {/* Skor Detayları (Breakdown) */}
+                          {currentOutfit?.breakdown && (
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6 p-4 rounded-2xl bg-white/50 dark:bg-gray-800/40 border border-indigo-100/50 dark:border-indigo-500/10 text-xs">
+                              <div>
+                                <div className="flex justify-between mb-1 text-text-secondary">
+                                  <span>Renk Uyumu</span>
+                                  <span className="font-semibold text-text-primary">%{currentOutfit.breakdown.colorHarmony}</span>
+                                </div>
+                                <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                                  <div className="h-full bg-emerald-500 rounded-full transition-all" style={{ width: `${currentOutfit.breakdown.colorHarmony}%` }} />
+                                </div>
+                              </div>
+                              <div>
+                                <div className="flex justify-between mb-1 text-text-secondary">
+                                  <span>Hava Uyumu</span>
+                                  <span className="font-semibold text-text-primary">%{currentOutfit.breakdown.weatherAppropriateness}</span>
+                                </div>
+                                <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                                  <div className="h-full bg-sky-500 rounded-full transition-all" style={{ width: `${currentOutfit.breakdown.weatherAppropriateness}%` }} />
+                                </div>
+                              </div>
+                              <div>
+                                <div className="flex justify-between mb-1 text-text-secondary">
+                                  <span>Ortam Uyumu</span>
+                                  <span className="font-semibold text-text-primary">%{currentOutfit.breakdown.formality}</span>
+                                </div>
+                                <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                                  <div className="h-full bg-violet-500 rounded-full transition-all" style={{ width: `${currentOutfit.breakdown.formality}%` }} />
+                                </div>
+                              </div>
+                              <div>
+                                <div className="flex justify-between mb-1 text-text-secondary">
+                                  <span>Kişisel Stil</span>
+                                  <span className="font-semibold text-text-primary">%{currentOutfit.breakdown.personalStyle}</span>
+                                </div>
+                                <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                                  <div className="h-full bg-indigo-500 rounded-full transition-all" style={{ width: `${currentOutfit.breakdown.personalStyle}%` }} />
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-indigo-100 dark:border-indigo-500/10 pt-4 mt-2">
+                            {/* Geri Bildirim Butonları (Feedback Loop) */}
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => handleFeedback('worn')}
+                                title="Bu kombini giydiğini kaydet ve stil günlüğüne ekle"
+                                className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/40 rounded-xl text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition-all"
+                              >
+                                <CheckCircle2 className="w-4 h-4" />
+                                <span>Bunu Giydim</span>
+                              </button>
+                              <button
+                                onClick={() => handleFeedback('disliked')}
+                                title="Bu öneriyi beğenmedim, AI bir dahakine farklı parçalar önersin"
+                                className="flex items-center gap-1.5 px-3 py-2 bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800/40 rounded-xl text-xs font-semibold hover:bg-rose-100 dark:hover:bg-rose-900/40 transition-all"
+                              >
+                                <ThumbsDown className="w-3.5 h-3.5" />
+                                <span className="hidden sm:inline">Beğenmedim</span>
+                              </button>
+                            </div>
+
+                            {/* Yeniden Üret & Kaydet */}
+                            <div className="flex items-center gap-2 ml-auto">
+                              <button
+                                onClick={handleReroll}
+                                disabled={isGenerating}
+                                className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-800 border border-indigo-200 dark:border-indigo-500/30 text-indigo-600 dark:text-indigo-400 rounded-xl text-xs font-semibold hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-all disabled:opacity-50 shadow-sm"
+                              >
+                                <RefreshCw className={`w-3.5 h-3.5 ${isGenerating ? 'animate-spin' : ''}`} />
+                                Yeniden Üret
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  const defaultName = currentOutfit?.title || 'Favori Kombinim';
+                                  const name = await ask('Kombin İsmi', defaultName);
+                                  if (!name) return;
+                                  try {
+                                    const token = localStorage.getItem('aura_token');
+                                    const res = await fetch('/api/outfits', {
+                                      method: 'POST',
+                                      headers: { 
+                                        'Content-Type': 'application/json',
+                                        'Authorization': `Bearer ${token}`
+                                      },
+                                      body: JSON.stringify({
+                                        name,
+                                        items: currentOutfit?.itemIds || result?.selectedItems || [],
+                                        stylingReason: currentOutfit?.reason || result?.stylingReason || '',
+                                        compatibilityScore: currentOutfit?.score || result?.compatibilityScore || 0
+                                      })
+                                    });
+                                    if (res.ok) {
+                                      notify('Kombin kaydedildi!', 'success');
+                                      fetchOutfits();
+                                    } else throw new Error();
+                                  } catch {
+                                    notify('Kombin kaydedilemedi', 'error');
+                                  }
+                                }}
+                                className="flex items-center gap-2 px-5 py-2 bg-indigo-600 text-white rounded-xl text-xs font-semibold hover:bg-indigo-700 transition-all shadow-md shadow-indigo-500/20"
+                              >
+                                <Save className="w-3.5 h-3.5" />
+                                Kombini Kaydet
+                              </button>
+                            </div>
                           </div>
                         </motion.div>
                       )}

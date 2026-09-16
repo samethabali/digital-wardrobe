@@ -110,8 +110,16 @@ export function WardrobeProvider({ children }: { children: ReactNode }) {
         'Authorization': `Bearer ${token}`
       }
     })
-      .then(res => {
-        const reader = res.body!.getReader();
+      .then(async res => {
+        // Sunucu akışı başlatmadan hata döndüyse (ör. 429 istek sınırı) akış okunmaz, hata gösterilir
+        if (!res.ok || !res.body) {
+          const data = await res.json().catch(() => ({}));
+          const message = data.error || 'Analiz başlatılamadı.';
+          setEnrichState(p => ({ ...p, running: false, message }));
+          notify(message, 'error');
+          return;
+        }
+        const reader = res.body.getReader();
         const decoder = new TextDecoder();
         const pump = (): Promise<void> => reader.read().then(({ done, value }) => {
           if (done) { 

@@ -47,6 +47,11 @@ Eğer projeyi kendi bilgisayarınızda çalıştırmak isterseniz aşağıdaki a
     CLOUDINARY_CLOUD_NAME=xxx
     CLOUDINARY_API_KEY=xxx
     CLOUDINARY_API_SECRET=xxx
+    JWT_SECRET=en_az_32_karakterlik_rastgele_bir_deger
+    ```
+    `JWT_SECRET` zorunludur; tanımlı değilse sunucu başlamaz. Güçlü bir değer üretmek için:
+    ```bash
+    node -e "console.log(require('crypto').randomBytes(48).toString('base64'))"
     ```
 
 4.  **Sunucuyu Başlatın**

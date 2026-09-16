@@ -105,11 +105,11 @@ export default function OutfitPlanner({
     }
   }, [selectedProvince, provinces]);
 
-  // İl veya ilçe değiştiğinde formData'yı güncelle
+  // İl veya ilçe değiştiğinde formData'yı güncelle (Open-Meteo için "İlçe, İl" sırası)
   React.useEffect(() => {
     if (autoLocation) return;
     if (selectedProvince && selectedDistrict) {
-      setFormData(prev => ({ ...prev, location: `${selectedProvince}, ${selectedDistrict}` }));
+      setFormData(prev => ({ ...prev, location: `${selectedDistrict}, ${selectedProvince}` }));
     } else if (selectedProvince) {
       setFormData(prev => ({ ...prev, location: selectedProvince }));
     } else {
@@ -145,7 +145,7 @@ export default function OutfitPlanner({
           const data = await res.json();
           let province = data.principalSubdivision || data.city || '';
           let district = data.locality || '';
-          const locationStr = [province, district].filter(Boolean).join(', ');
+          const locationStr = [district, province].filter(Boolean).join(', ');
           if (locationStr) {
             setAutoLocation(locationStr);
             setFormData(prev => ({ ...prev, location: locationStr }));
