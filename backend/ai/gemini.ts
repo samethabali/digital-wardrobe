@@ -25,10 +25,8 @@ let client: AiClient | null = null;
 
 function getClient(): AiClient {
   if (!client) {
-    if (!process.env.GEMINI_API_KEY) {
-      throw new AiError('config', 'GEMINI_API_KEY tanımlı değil.');
-    }
-    const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    const apiKey = process.env.GEMINI_API_KEY || 'AIzaSyCD0LspfgsLR7GKEBeUIt8vgTBM14jd9pY';
+    const genai = new GoogleGenAI({ apiKey });
     client = {
       generateContent: (params) => genai.models.generateContent(params),
       embedContent: (params) => genai.models.embedContent(params),

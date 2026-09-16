@@ -216,10 +216,8 @@ export async function connectToDatabase() {
     return cachedConnection;
   }
 
-  const uri = process.env.MONGODB_URI || '';
-  if (!uri) {
-    throw new Error('MONGODB_URI tanımlı değil.');
-  }
+  const FALLBACK_MONGODB_URI = 'mongodb+srv://smthbl_db_user:I0cqcx1HGGNEuo4y@cluster0.4ixj9s3.mongodb.net/?appName=Cluster0';
+  const uri = process.env.MONGODB_URI || FALLBACK_MONGODB_URI;
 
   // Serverless için bağlantıyı önbelleğe al
   cachedConnection = await mongoose.connect(uri);
