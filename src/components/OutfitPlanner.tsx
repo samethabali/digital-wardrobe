@@ -15,6 +15,19 @@ interface OutfitPlannerProps {
   onCollabResult?: (result: CollabResult & { friendName: string; friendItems: WardrobeItem[] }) => void;
 }
 
+const DEFAULT_TURKISH_PROVINCES = [
+  'Adana', 'Adıyaman', 'Afyonkarahisar', 'Ağrı', 'Amasya', 'Ankara', 'Antalya', 'Artvin',
+  'Aydın', 'Balıkesir', 'Bilecik', 'Bingöl', 'Bitlis', 'Bolu', 'Burdur', 'Bursa', 'Çanakkale',
+  'Çankırı', 'Çorum', 'Denizli', 'Diyarbakır', 'Edirne', 'Elazığ', 'Erzincan', 'Erzurum',
+  'Eskişehir', 'Gaziantep', 'Giresun', 'Gümüşhane', 'Hakkari', 'Hatay', 'Isparta', 'Mersin',
+  'İstanbul', 'İzmir', 'Kars', 'Kastamonu', 'Kayseri', 'Kırklareli', 'Kırşehir', 'Kocaeli',
+  'Konya', 'Kütahya', 'Malatya', 'Manisa', 'Kahramanmaraş', 'Mardin', 'Muğla', 'Muş',
+  'Nevşehir', 'Niğde', 'Ordu', 'Rize', 'Sakarya', 'Samsun', 'Siirt', 'Sinop', 'Sivas',
+  'Tekirdağ', 'Tokat', 'Trabzon', 'Tunceli', 'Şanlıurfa', 'Uşak', 'Van', 'Yozgat', 'Zonguldak',
+  'Aksaray', 'Bayburt', 'Karaman', 'Kırıkkale', 'Batman', 'Şırnak', 'Bartın', 'Ardahan',
+  'Iğdır', 'Yalova', 'Karabük', 'Kilis', 'Osmaniye', 'Düzce'
+].map((name, id) => ({ id: id + 1, name, districts: [] }));
+
 export default function OutfitPlanner({
   items,
   onGenerate,
@@ -42,7 +55,7 @@ export default function OutfitPlanner({
     items: false
   });
 
-  const [provinces, setProvinces] = React.useState<any[]>([]);
+  const [provinces, setProvinces] = React.useState<any[]>(DEFAULT_TURKISH_PROVINCES);
   const [districts, setDistricts] = React.useState<any[]>([]);
   const [selectedProvince, setSelectedProvince] = React.useState('');
   const [selectedDistrict, setSelectedDistrict] = React.useState('');
@@ -164,14 +177,22 @@ export default function OutfitPlanner({
         }
       },
       () => {
-        onNotify('Konum alınamadı. Lütfen izinleri kontrol edin.', 'error');
         setIsLocating(false);
+        const fallbackLoc = 'Kadıköy, İstanbul';
+        setAutoLocation(fallbackLoc);
+        setFormData(prev => ({ ...prev, location: fallbackLoc }));
+        onNotify('Konum izni alınamadı; varsayılan olarak Kadıköy, İstanbul havası kullanılıyor.', 'info');
+        if (autoSubmit) {
+          onGenerate({ ...formData, location: fallbackLoc, event: 'Gündelik', effort: 5, mood: 'Rahat', ignoreWeather: false });
+        }
       }
     );
   };
 
   const handleQuickGenerate = () => {
     if (autoLocation) {
+      onGenerate({ ...formData, location: autoLocation, event: 'Gündelik', effort: 5, mood: 'Rahat', ignoreWeather: false });
+    } else if (formData.location) {
       onGenerate({ ...formData, event: 'Gündelik', effort: 5, mood: 'Rahat', ignoreWeather: false });
     } else {
       handleCurrentLocation(true);
@@ -454,7 +475,7 @@ export default function OutfitPlanner({
                   </div>
                   <div className="relative flex-1">
                     <select
-                      required={!autoLocation && selectedProvince !== ''}
+                      required={!autoLocation && selectedProvince !== '' && districts.length > 0}
                       disabled={!selectedProvince || districts.length === 0}
                       className="w-full appearance-none bg-primary border border-border-color rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/10 disabled:opacity-50 text-text-primary transition-colors"
                       value={selectedDistrict}
