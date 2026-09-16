@@ -41,8 +41,10 @@ export interface WardrobeMetadata {
   outfits?: SavedOutfit[];
 }
 
+import type { LocationInput } from '../shared/api.js';
+
 export interface StylistRequest {
-  location: string;
+  location?: string | LocationInput;
   event: string;
   effort?: number; // 1-10
   mood?: string;

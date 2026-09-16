@@ -128,7 +128,7 @@ function Dashboard() {
 
     // İstek parametrelerinin değişip değişmediğini kontrol et (yenilemelerde geçmişi koruruz, yeni aramalarda temizleriz)
     const isRequestChanged = !!(lastRequest && (
-      lastRequest.location !== request.location ||
+      JSON.stringify(lastRequest.location) !== JSON.stringify(request.location) ||
       lastRequest.event !== request.event ||
       lastRequest.mood !== request.mood ||
       JSON.stringify(lastRequest.styleTags) !== JSON.stringify(request.styleTags)

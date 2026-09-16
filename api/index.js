@@ -718,6 +718,1725 @@ function embeddingCacheKey(text2) {
   return crypto.createHash("sha1").update(`${EMBEDDING_MODEL}:${EMBEDDING_DIMENSIONS}:${text2}`).digest("hex");
 }
 
+// shared/turkeyLocations.ts
+var TURKISH_PROVINCES = [
+  {
+    "id": 1,
+    "name": "Adana",
+    "lat": 37.0017,
+    "lon": 35.3289,
+    "districts": [
+      "Alada\u011F",
+      "Ceyhan",
+      "\xC7ukurova",
+      "Feke",
+      "\u0130mamo\u011Flu",
+      "Karaisal\u0131",
+      "Karata\u015F",
+      "Kozan",
+      "Pozant\u0131",
+      "Saimbeyli",
+      "Sar\u0131\xE7am",
+      "Seyhan",
+      "Tufanbeyli",
+      "Yumurtal\u0131k",
+      "Y\xFCre\u011Fir"
+    ]
+  },
+  {
+    "id": 2,
+    "name": "Ad\u0131yaman",
+    "lat": 37.7647,
+    "lon": 38.2786,
+    "districts": [
+      "Besni",
+      "\xC7elikhan",
+      "Gerger",
+      "G\xF6lba\u015F\u0131",
+      "Kahta",
+      "Merkez",
+      "Samsat",
+      "Sincik",
+      "Tut"
+    ]
+  },
+  {
+    "id": 3,
+    "name": "Afyonkarahisar",
+    "lat": 38.7503,
+    "lon": 30.5567,
+    "districts": [
+      "Ba\u015Fmak\xE7\u0131",
+      "Bayat",
+      "Bolvadin",
+      "\xC7ay",
+      "\xC7obanlar",
+      "Dazk\u0131r\u0131",
+      "Dinar",
+      "Emirda\u011F",
+      "Evciler",
+      "Hocalar",
+      "\u0130hsaniye",
+      "\u0130scehisar",
+      "K\u0131z\u0131l\xF6ren",
+      "Merkez",
+      "Sand\u0131kl\u0131",
+      "Sinanpa\u015Fa",
+      "Sultanda\u011F\u0131",
+      "\u015Euhut"
+    ]
+  },
+  {
+    "id": 4,
+    "name": "A\u011Fr\u0131",
+    "lat": 39.7194,
+    "lon": 43.0506,
+    "districts": [
+      "Diyadin",
+      "Do\u011Fubayaz\u0131t",
+      "Ele\u015Fkirt",
+      "Hamur",
+      "Merkez",
+      "Patnos",
+      "Ta\u015Fl\u0131\xE7ay",
+      "Tutak"
+    ]
+  },
+  {
+    "id": 68,
+    "name": "Aksaray",
+    "lat": 38.3667,
+    "lon": 34.0333,
+    "districts": [
+      "A\u011Fa\xE7\xF6ren",
+      "Eskil",
+      "G\xFCla\u011Fa\xE7",
+      "G\xFCzelyurt",
+      "Merkez",
+      "Ortak\xF6y",
+      "Sar\u0131yah\u015Fi",
+      "Sultanhan\u0131"
+    ]
+  },
+  {
+    "id": 5,
+    "name": "Amasya",
+    "lat": 40.6497,
+    "lon": 35.8353,
+    "districts": [
+      "G\xF6yn\xFCcek",
+      "G\xFCm\xFC\u015Fhac\u0131k\xF6y",
+      "Hamam\xF6z\xFC",
+      "Merkez",
+      "Merzifon",
+      "Suluova",
+      "Ta\u015Fova"
+    ]
+  },
+  {
+    "id": 6,
+    "name": "Ankara",
+    "lat": 39.9208,
+    "lon": 32.8541,
+    "districts": [
+      "Akyurt",
+      "Alt\u0131nda\u011F",
+      "Aya\u015F",
+      "Bala",
+      "Beypazar\u0131",
+      "\xC7aml\u0131dere",
+      "\xC7ankaya",
+      "\xC7ubuk",
+      "Elmada\u011F",
+      "Etimesgut",
+      "Evren",
+      "G\xF6lba\u015F\u0131",
+      "G\xFCd\xFCl",
+      "Haymana",
+      "Kahramankazan",
+      "Kalecik",
+      "Ke\xE7i\xF6ren",
+      "K\u0131z\u0131lcahamam",
+      "Mamak",
+      "Nall\u0131han",
+      "Polatl\u0131",
+      "Pursaklar",
+      "Sincan",
+      "\u015Eerefliko\xE7hisar",
+      "Yenimahalle"
+    ]
+  },
+  {
+    "id": 7,
+    "name": "Antalya",
+    "lat": 36.8841,
+    "lon": 30.7056,
+    "districts": [
+      "Akseki",
+      "Aksu",
+      "Alanya",
+      "Demre",
+      "D\xF6\u015Femealt\u0131",
+      "Elmal\u0131",
+      "Finike",
+      "Gazipa\u015Fa",
+      "G\xFCndo\u011Fmu\u015F",
+      "\u0130brad\u0131",
+      "Ka\u015F",
+      "Kemer",
+      "Kepez",
+      "Konyaalt\u0131",
+      "Korkuteli",
+      "Kumluca",
+      "Manavgat",
+      "Muratpa\u015Fa",
+      "Serik"
+    ]
+  },
+  {
+    "id": 75,
+    "name": "Ardahan",
+    "lat": 41.1083,
+    "lon": 42.7,
+    "districts": [
+      "\xC7\u0131ld\u0131r",
+      "Damal",
+      "G\xF6le",
+      "Hanak",
+      "Merkez",
+      "Posof"
+    ]
+  },
+  {
+    "id": 8,
+    "name": "Artvin",
+    "lat": 41.1822,
+    "lon": 41.8189,
+    "districts": [
+      "Ardanu\xE7",
+      "Arhavi",
+      "Bor\xE7ka",
+      "Hopa",
+      "Kemalpa\u015Fa",
+      "Merkez",
+      "Murgul",
+      "\u015Eav\u015Fat",
+      "Yusufeli"
+    ]
+  },
+  {
+    "id": 9,
+    "name": "Ayd\u0131n",
+    "lat": 37.8444,
+    "lon": 27.8456,
+    "districts": [
+      "Bozdo\u011Fan",
+      "Buharkent",
+      "\xC7ine",
+      "Didim",
+      "Efeler",
+      "Germencik",
+      "\u0130ncirliova",
+      "Karacasu",
+      "Karpuzlu",
+      "Ko\xE7arl\u0131",
+      "K\xF6\u015Fk",
+      "Ku\u015Fadas\u0131",
+      "Kuyucak",
+      "Nazilli",
+      "S\xF6ke",
+      "Sultanhisar",
+      "Yenipazar"
+    ]
+  },
+  {
+    "id": 10,
+    "name": "Bal\u0131kesir",
+    "lat": 39.6486,
+    "lon": 27.8825,
+    "districts": [
+      "Alt\u0131eyl\xFCl",
+      "Ayval\u0131k",
+      "Balya",
+      "Band\u0131rma",
+      "Bigadi\xE7",
+      "Burhaniye",
+      "Dursunbey",
+      "Edremit",
+      "Erdek",
+      "G\xF6me\xE7",
+      "G\xF6nen",
+      "Havran",
+      "\u0130vrindi",
+      "Karesi",
+      "Kepsut",
+      "Manyas",
+      "Marmara",
+      "Sava\u015Ftepe",
+      "S\u0131nd\u0131rg\u0131",
+      "Susurluk"
+    ]
+  },
+  {
+    "id": 74,
+    "name": "Bart\u0131n",
+    "lat": 41.6333,
+    "lon": 32.3333,
+    "districts": [
+      "Amasra",
+      "Kuruca\u015File",
+      "Merkez",
+      "Ulus"
+    ]
+  },
+  {
+    "id": 72,
+    "name": "Batman",
+    "lat": 37.8833,
+    "lon": 41.1333,
+    "districts": [
+      "Be\u015Firi",
+      "Gerc\xFC\u015F",
+      "Hasankeyf",
+      "Kozluk",
+      "Merkez",
+      "Sason"
+    ]
+  },
+  {
+    "id": 69,
+    "name": "Bayburt",
+    "lat": 40.25,
+    "lon": 40.2167,
+    "districts": [
+      "Ayd\u0131ntepe",
+      "Demir\xF6z\xFC",
+      "Merkez"
+    ]
+  },
+  {
+    "id": 11,
+    "name": "Bilecik",
+    "lat": 40.1456,
+    "lon": 29.9792,
+    "districts": [
+      "Boz\xFCy\xFCk",
+      "G\xF6lpazar\u0131",
+      "\u0130nhisar",
+      "Merkez",
+      "Osmaneli",
+      "Pazaryeri",
+      "S\xF6\u011F\xFCt",
+      "Yenipazar"
+    ]
+  },
+  {
+    "id": 12,
+    "name": "Bing\xF6l",
+    "lat": 38.885,
+    "lon": 40.4986,
+    "districts": [
+      "Adakl\u0131",
+      "Gen\xE7",
+      "Karl\u0131ova",
+      "Ki\u011F\u0131",
+      "Merkez",
+      "Solhan",
+      "Yayladere",
+      "Yedisu"
+    ]
+  },
+  {
+    "id": 13,
+    "name": "Bitlis",
+    "lat": 38.3953,
+    "lon": 42.1236,
+    "districts": [
+      "Adilcevaz",
+      "Ahlat",
+      "G\xFCroymak",
+      "Hizan",
+      "Merkez",
+      "Mutki",
+      "Tatvan"
+    ]
+  },
+  {
+    "id": 14,
+    "name": "Bolu",
+    "lat": 40.7353,
+    "lon": 31.6064,
+    "districts": [
+      "D\xF6rtdivan",
+      "Gerede",
+      "G\xF6yn\xFCk",
+      "K\u0131br\u0131sc\u0131k",
+      "Mengen",
+      "Merkez",
+      "Mudurnu",
+      "Seben",
+      "Yeni\xE7a\u011Fa"
+    ]
+  },
+  {
+    "id": 15,
+    "name": "Burdur",
+    "lat": 37.7211,
+    "lon": 30.2906,
+    "districts": [
+      "A\u011Flasun",
+      "Alt\u0131nyayla",
+      "Bucak",
+      "\xC7avd\u0131r",
+      "\xC7eltik\xE7i",
+      "G\xF6lhisar",
+      "Karamanl\u0131",
+      "Kemer",
+      "Merkez",
+      "Tefenni",
+      "Ye\u015Filova"
+    ]
+  },
+  {
+    "id": 16,
+    "name": "Bursa",
+    "lat": 40.1822,
+    "lon": 29.0611,
+    "districts": [
+      "B\xFCy\xFCkorhan",
+      "Gemlik",
+      "G\xFCrsu",
+      "Harmanc\u0131k",
+      "\u0130neg\xF6l",
+      "\u0130znik",
+      "Karacabey",
+      "Keles",
+      "Kestel",
+      "Mudanya",
+      "Mustafakemalpa\u015Fa",
+      "Nil\xFCfer",
+      "Orhaneli",
+      "Orhangazi",
+      "Osmangazi",
+      "Yeni\u015Fehir",
+      "Y\u0131ld\u0131r\u0131m"
+    ]
+  },
+  {
+    "id": 17,
+    "name": "\xC7anakkale",
+    "lat": 40.1556,
+    "lon": 26.4144,
+    "districts": [
+      "Ayvac\u0131k",
+      "Bayrami\xE7",
+      "Biga",
+      "Bozcaada",
+      "\xC7an",
+      "Eceabat",
+      "Ezine",
+      "Gelibolu",
+      "G\xF6k\xE7eada",
+      "Lapseki",
+      "Merkez",
+      "Yenice"
+    ]
+  },
+  {
+    "id": 18,
+    "name": "\xC7ank\u0131r\u0131",
+    "lat": 40.6,
+    "lon": 33.6167,
+    "districts": [
+      "Atkaracalar",
+      "Bayram\xF6ren",
+      "\xC7erke\u015F",
+      "Eldivan",
+      "Ilgaz",
+      "K\u0131z\u0131l\u0131rmak",
+      "Korgun",
+      "Kur\u015Funlu",
+      "Merkez",
+      "Orta",
+      "\u015Eaban\xF6z\xFC",
+      "Yaprakl\u0131"
+    ]
+  },
+  {
+    "id": 19,
+    "name": "\xC7orum",
+    "lat": 40.5506,
+    "lon": 34.9556,
+    "districts": [
+      "Alaca",
+      "Bayat",
+      "Bo\u011Fazkale",
+      "Dodurga",
+      "\u0130skilip",
+      "Karg\u0131",
+      "La\xE7in",
+      "Mecit\xF6z\xFC",
+      "Merkez",
+      "O\u011Fuzlar",
+      "Ortak\xF6y",
+      "Osmanc\u0131k",
+      "Sungurlu",
+      "U\u011Furluda\u011F"
+    ]
+  },
+  {
+    "id": 20,
+    "name": "Denizli",
+    "lat": 37.7764,
+    "lon": 29.0861,
+    "districts": [
+      "Ac\u0131payam",
+      "Babada\u011F",
+      "Baklan",
+      "Bekilli",
+      "Beya\u011Fa\xE7",
+      "Bozkurt",
+      "Buldan",
+      "\xC7al",
+      "\xC7ameli",
+      "\xC7ardak",
+      "\xC7ivril",
+      "G\xFCney",
+      "Honaz",
+      "Kale",
+      "Merkezefendi",
+      "Pamukkale",
+      "Sarayk\xF6y",
+      "Serinhisar",
+      "Tavas"
+    ]
+  },
+  {
+    "id": 21,
+    "name": "Diyarbak\u0131r",
+    "lat": 37.9142,
+    "lon": 40.2306,
+    "districts": [
+      "Ba\u011Flar",
+      "Bismil",
+      "\xC7ermik",
+      "\xC7\u0131nar",
+      "\xC7\xFCng\xFC\u015F",
+      "Dicle",
+      "E\u011Fil",
+      "Ergani",
+      "Hani",
+      "Hazro",
+      "Kayap\u0131nar",
+      "Kocak\xF6y",
+      "Kulp",
+      "Lice",
+      "Silvan",
+      "Sur",
+      "Yeni\u015Fehir"
+    ]
+  },
+  {
+    "id": 81,
+    "name": "D\xFCzce",
+    "lat": 40.8333,
+    "lon": 31.1667,
+    "districts": [
+      "Ak\xE7akoca",
+      "Cumayeri",
+      "\xC7ilimli",
+      "G\xF6lyaka",
+      "G\xFCm\xFC\u015Fova",
+      "Kayna\u015Fl\u0131",
+      "Merkez",
+      "Y\u0131\u011F\u0131lca"
+    ]
+  },
+  {
+    "id": 22,
+    "name": "Edirne",
+    "lat": 41.6708,
+    "lon": 26.5556,
+    "districts": [
+      "Enez",
+      "Havsa",
+      "\u0130psala",
+      "Ke\u015Fan",
+      "Lalapa\u015Fa",
+      "Meri\xE7",
+      "Merkez",
+      "S\xFClo\u011Flu",
+      "Uzunk\xF6pr\xFC"
+    ]
+  },
+  {
+    "id": 23,
+    "name": "Elaz\u0131\u011F",
+    "lat": 38.6806,
+    "lon": 39.2264,
+    "districts": [
+      "A\u011F\u0131n",
+      "Alacakaya",
+      "Ar\u0131cak",
+      "Baskil",
+      "Karako\xE7an",
+      "Keban",
+      "Kovanc\u0131lar",
+      "Maden",
+      "Merkez",
+      "Palu",
+      "Sivrice"
+    ]
+  },
+  {
+    "id": 24,
+    "name": "Erzincan",
+    "lat": 39.75,
+    "lon": 39.5,
+    "districts": [
+      "\xC7ay\u0131rl\u0131",
+      "\u0130li\xE7",
+      "Kemah",
+      "Kemaliye",
+      "Merkez",
+      "Otlukbeli",
+      "Refahiye",
+      "Tercan",
+      "\xDCz\xFCml\xFC"
+    ]
+  },
+  {
+    "id": 25,
+    "name": "Erzurum",
+    "lat": 39.9086,
+    "lon": 41.2769,
+    "districts": [
+      "A\u015Fkale",
+      "Aziziye",
+      "\xC7at",
+      "H\u0131n\u0131s",
+      "Horasan",
+      "\u0130spir",
+      "Kara\xE7oban",
+      "Karayaz\u0131",
+      "K\xF6pr\xFCk\xF6y",
+      "Narman",
+      "Oltu",
+      "Olur",
+      "Paland\xF6ken",
+      "Pasinler",
+      "Pazaryolu",
+      "\u015Eenkaya",
+      "Tekman",
+      "Tortum",
+      "Uzundere",
+      "Yakutiye"
+    ]
+  },
+  {
+    "id": 26,
+    "name": "Eski\u015Fehir",
+    "lat": 39.7764,
+    "lon": 30.5206,
+    "districts": [
+      "Alpu",
+      "Beylikova",
+      "\xC7ifteler",
+      "G\xFCny\xFCz\xFC",
+      "Han",
+      "\u0130n\xF6n\xFC",
+      "Mahmudiye",
+      "Mihalgazi",
+      "Mihal\u0131\xE7\xE7\u0131k",
+      "Odunpazar\u0131",
+      "Sar\u0131cakaya",
+      "Seyitgazi",
+      "Sivrihisar",
+      "Tepeba\u015F\u0131"
+    ]
+  },
+  {
+    "id": 27,
+    "name": "Gaziantep",
+    "lat": 37.0667,
+    "lon": 37.3833,
+    "districts": [
+      "Araban",
+      "\u0130slahiye",
+      "Karkam\u0131\u015F",
+      "Nizip",
+      "Nurda\u011F\u0131",
+      "O\u011Fuzeli",
+      "\u015Eahinbey",
+      "\u015Eehitkamil",
+      "Yavuzeli"
+    ]
+  },
+  {
+    "id": 28,
+    "name": "Giresun",
+    "lat": 40.9167,
+    "lon": 38.4,
+    "districts": [
+      "Alucra",
+      "Bulancak",
+      "\xC7amoluk",
+      "\xC7anak\xE7\u0131",
+      "Dereli",
+      "Do\u011Fankent",
+      "Espiye",
+      "Eynesil",
+      "G\xF6rele",
+      "G\xFCce",
+      "Ke\u015Fap",
+      "Merkez",
+      "Piraziz",
+      "\u015Eebinkarahisar",
+      "Tirebolu",
+      "Ya\u011Fl\u0131dere"
+    ]
+  },
+  {
+    "id": 29,
+    "name": "G\xFCm\xFC\u015Fhane",
+    "lat": 40.45,
+    "lon": 39.4833,
+    "districts": [
+      "Kelkit",
+      "K\xF6se",
+      "K\xFCrt\xFCn",
+      "Merkez",
+      "\u015Eiran",
+      "Torul"
+    ]
+  },
+  {
+    "id": 30,
+    "name": "Hakkari",
+    "lat": 37.5833,
+    "lon": 43.7333,
+    "districts": [
+      "\xC7ukurca",
+      "Derecik",
+      "Merkez",
+      "\u015Eemdinli",
+      "Y\xFCksekova"
+    ]
+  },
+  {
+    "id": 31,
+    "name": "Hatay",
+    "lat": 36.2,
+    "lon": 36.1667,
+    "districts": [
+      "Alt\u0131n\xF6z\xFC",
+      "Antakya",
+      "Arsuz",
+      "Belen",
+      "Defne",
+      "D\xF6rtyol",
+      "Erzin",
+      "Hassa",
+      "\u0130skenderun",
+      "K\u0131r\u0131khan",
+      "Kumlu",
+      "Payas",
+      "Reyhanl\u0131",
+      "Samanda\u011F",
+      "Yaylada\u011F\u0131"
+    ]
+  },
+  {
+    "id": 76,
+    "name": "I\u011Fd\u0131r",
+    "lat": 39.9167,
+    "lon": 44.0333,
+    "districts": [
+      "Aral\u0131k",
+      "Karakoyunlu",
+      "Merkez",
+      "Tuzluca"
+    ]
+  },
+  {
+    "id": 32,
+    "name": "Isparta",
+    "lat": 37.7667,
+    "lon": 30.55,
+    "districts": [
+      "Aksu",
+      "Atabey",
+      "E\u011Firdir",
+      "Gelendost",
+      "G\xF6nen",
+      "Ke\xE7iborlu",
+      "Merkez",
+      "Senirkent",
+      "S\xFCt\xE7\xFCler",
+      "\u015Earkikaraa\u011Fa\xE7",
+      "Uluborlu",
+      "Yalva\xE7",
+      "Yeni\u015Farbademli"
+    ]
+  },
+  {
+    "id": 34,
+    "name": "\u0130stanbul",
+    "lat": 41.0138,
+    "lon": 28.9497,
+    "districts": [
+      "Adalar",
+      "Arnavutk\xF6y",
+      "Ata\u015Fehir",
+      "Avc\u0131lar",
+      "Ba\u011Fc\u0131lar",
+      "Bah\xE7elievler",
+      "Bak\u0131rk\xF6y",
+      "Ba\u015Fak\u015Fehir",
+      "Bayrampa\u015Fa",
+      "Be\u015Fikta\u015F",
+      "Beykoz",
+      "Beylikd\xFCz\xFC",
+      "Beyo\u011Flu",
+      "B\xFCy\xFCk\xE7ekmece",
+      "\xC7atalca",
+      "\xC7ekmek\xF6y",
+      "Esenler",
+      "Esenyurt",
+      "Ey\xFCpsultan",
+      "Fatih",
+      "Gaziosmanpa\u015Fa",
+      "G\xFCng\xF6ren",
+      "Kad\u0131k\xF6y",
+      "Ka\u011F\u0131thane",
+      "Kartal",
+      "K\xFC\xE7\xFCk\xE7ekmece",
+      "Maltepe",
+      "Pendik",
+      "Sancaktepe",
+      "Sar\u0131yer",
+      "Silivri",
+      "Sultanbeyli",
+      "Sultangazi",
+      "\u015Eile",
+      "\u015Ei\u015Fli",
+      "Tuzla",
+      "\xDCmraniye",
+      "\xDCsk\xFCdar",
+      "Zeytinburnu"
+    ]
+  },
+  {
+    "id": 35,
+    "name": "\u0130zmir",
+    "lat": 38.4188,
+    "lon": 27.1287,
+    "districts": [
+      "Alia\u011Fa",
+      "Bal\xE7ova",
+      "Bay\u0131nd\u0131r",
+      "Bayrakl\u0131",
+      "Bergama",
+      "Beyda\u011F",
+      "Bornova",
+      "Buca",
+      "\xC7e\u015Fme",
+      "\xC7i\u011Fli",
+      "Dikili",
+      "Fo\xE7a",
+      "Gaziemir",
+      "G\xFCzelbah\xE7e",
+      "Karaba\u011Flar",
+      "Karaburun",
+      "Kar\u015F\u0131yaka",
+      "Kemalpa\u015Fa",
+      "K\u0131n\u0131k",
+      "Kiraz",
+      "Konak",
+      "Menderes",
+      "Menemen",
+      "Narl\u0131dere",
+      "\xD6demi\u015F",
+      "Seferihisar",
+      "Sel\xE7uk",
+      "Tire",
+      "Torbal\u0131",
+      "Urla"
+    ]
+  },
+  {
+    "id": 46,
+    "name": "Kahramanmara\u015F",
+    "lat": 37.5833,
+    "lon": 36.9333,
+    "districts": [
+      "Af\u015Fin",
+      "And\u0131r\u0131n",
+      "\xC7a\u011Flayancerit",
+      "Dulkadiro\u011Flu",
+      "Ekin\xF6z\xFC",
+      "Elbistan",
+      "G\xF6ksun",
+      "Nurhak",
+      "Oniki\u015Fubat",
+      "Pazarc\u0131k",
+      "T\xFCrko\u011Flu"
+    ]
+  },
+  {
+    "id": 78,
+    "name": "Karab\xFCk",
+    "lat": 41.2,
+    "lon": 32.6333,
+    "districts": [
+      "Eflani",
+      "Eskipazar",
+      "Merkez",
+      "Ovac\u0131k",
+      "Safranbolu",
+      "Yenice"
+    ]
+  },
+  {
+    "id": 70,
+    "name": "Karaman",
+    "lat": 37.1833,
+    "lon": 33.2167,
+    "districts": [
+      "Ayranc\u0131",
+      "Ba\u015Fyayla",
+      "Ermenek",
+      "Kaz\u0131mkarabekir",
+      "Merkez",
+      "Sar\u0131veliler"
+    ]
+  },
+  {
+    "id": 36,
+    "name": "Kars",
+    "lat": 40.6083,
+    "lon": 43.0833,
+    "districts": [
+      "Akyaka",
+      "Arpa\xE7ay",
+      "Digor",
+      "Ka\u011F\u0131zman",
+      "Merkez",
+      "Sar\u0131kam\u0131\u015F",
+      "Selim",
+      "Susuz"
+    ]
+  },
+  {
+    "id": 37,
+    "name": "Kastamonu",
+    "lat": 41.3889,
+    "lon": 33.7822,
+    "districts": [
+      "Abana",
+      "A\u011Fl\u0131",
+      "Ara\xE7",
+      "Azdavay",
+      "Bozkurt",
+      "Cide",
+      "\xC7atalzeytin",
+      "Daday",
+      "Devrekani",
+      "Do\u011Fanyurt",
+      "Han\xF6n\xFC",
+      "\u0130hsangazi",
+      "\u0130nebolu",
+      "K\xFCre",
+      "Merkez",
+      "P\u0131narba\u015F\u0131",
+      "Seydiler",
+      "\u015Eenpazar",
+      "Ta\u015Fk\xF6pr\xFC",
+      "Tosya"
+    ]
+  },
+  {
+    "id": 38,
+    "name": "Kayseri",
+    "lat": 38.7311,
+    "lon": 35.4789,
+    "districts": [
+      "Akk\u0131\u015Fla",
+      "B\xFCnyan",
+      "Develi",
+      "Felahiye",
+      "Hac\u0131lar",
+      "\u0130ncesu",
+      "Kocasinan",
+      "Melikgazi",
+      "\xD6zvatan",
+      "P\u0131narba\u015F\u0131",
+      "Sar\u0131o\u011Flan",
+      "Sar\u0131z",
+      "Talas",
+      "Tomarza",
+      "Yahyal\u0131",
+      "Ye\u015Filhisar"
+    ]
+  },
+  {
+    "id": 71,
+    "name": "K\u0131r\u0131kkale",
+    "lat": 39.85,
+    "lon": 33.5167,
+    "districts": [
+      "Bah\u015F\u0131l\u0131",
+      "Bal\u0131\u015Feyh",
+      "\xC7elebi",
+      "Delice",
+      "Karake\xE7ili",
+      "Keskin",
+      "Merkez",
+      "Sulakyurt",
+      "Yah\u015Fihan"
+    ]
+  },
+  {
+    "id": 39,
+    "name": "K\u0131rklareli",
+    "lat": 41.7333,
+    "lon": 27.2167,
+    "districts": [
+      "Babaeski",
+      "Demirk\xF6y",
+      "Kof\xE7az",
+      "L\xFCleburgaz",
+      "Merkez",
+      "Pehlivank\xF6y",
+      "P\u0131narhisar",
+      "Vize"
+    ]
+  },
+  {
+    "id": 40,
+    "name": "K\u0131r\u015Fehir",
+    "lat": 39.1422,
+    "lon": 34.1706,
+    "districts": [
+      "Ak\xE7akent",
+      "Akp\u0131nar",
+      "Boztepe",
+      "\xC7i\xE7ekda\u011F\u0131",
+      "Kaman",
+      "Merkez",
+      "Mucur"
+    ]
+  },
+  {
+    "id": 79,
+    "name": "Kilis",
+    "lat": 36.7167,
+    "lon": 37.1167,
+    "districts": [
+      "Elbeyli",
+      "Merkez",
+      "Musabeyli",
+      "Polateli"
+    ]
+  },
+  {
+    "id": 41,
+    "name": "Kocaeli",
+    "lat": 40.7667,
+    "lon": 29.9167,
+    "districts": [
+      "Ba\u015Fiskele",
+      "\xC7ay\u0131rova",
+      "Dar\u0131ca",
+      "Derince",
+      "Dilovas\u0131",
+      "Gebze",
+      "G\xF6lc\xFCk",
+      "\u0130zmit",
+      "Kand\u0131ra",
+      "Karam\xFCrsel",
+      "Kartepe",
+      "K\xF6rfez"
+    ]
+  },
+  {
+    "id": 42,
+    "name": "Konya",
+    "lat": 37.8667,
+    "lon": 32.4833,
+    "districts": [
+      "Ah\u0131rl\u0131",
+      "Ak\xF6ren",
+      "Ak\u015Fehir",
+      "Alt\u0131nekin",
+      "Bey\u015Fehir",
+      "Bozk\u0131r",
+      "Cihanbeyli",
+      "\xC7eltik",
+      "\xC7umra",
+      "Derbent",
+      "Derebucak",
+      "Do\u011Fanhisar",
+      "Emirgazi",
+      "Ere\u011Fli",
+      "G\xFCneys\u0131n\u0131r",
+      "Hadim",
+      "Halkap\u0131nar",
+      "H\xFCy\xFCk",
+      "Ilg\u0131n",
+      "Kad\u0131nhan\u0131",
+      "Karap\u0131nar",
+      "Karatay",
+      "Kulu",
+      "Meram",
+      "Saray\xF6n\xFC",
+      "Sel\xE7uklu",
+      "Seydi\u015Fehir",
+      "Ta\u015Fkent",
+      "Tuzluk\xE7u",
+      "Yal\u0131h\xFCy\xFCk",
+      "Yunak"
+    ]
+  },
+  {
+    "id": 43,
+    "name": "K\xFCtahya",
+    "lat": 39.4167,
+    "lon": 29.9833,
+    "districts": [
+      "Alt\u0131nta\u015F",
+      "Aslanapa",
+      "\xC7avdarhisar",
+      "Domani\xE7",
+      "Dumlup\u0131nar",
+      "Emet",
+      "Gediz",
+      "Hisarc\u0131k",
+      "Merkez",
+      "Pazarlar",
+      "Simav",
+      "\u015Eaphane",
+      "Tav\u015Fanl\u0131"
+    ]
+  },
+  {
+    "id": 44,
+    "name": "Malatya",
+    "lat": 38.355,
+    "lon": 38.305,
+    "districts": [
+      "Ak\xE7ada\u011F",
+      "Arapgir",
+      "Arguvan",
+      "Battalgazi",
+      "Darende",
+      "Do\u011Fan\u015Fehir",
+      "Do\u011Fanyol",
+      "Hekimhan",
+      "Kale",
+      "Kuluncak",
+      "P\xFCt\xFCrge",
+      "Yaz\u0131han",
+      "Ye\u015Filyurt"
+    ]
+  },
+  {
+    "id": 45,
+    "name": "Manisa",
+    "lat": 38.6136,
+    "lon": 27.4269,
+    "districts": [
+      "Ahmetli",
+      "Akhisar",
+      "Ala\u015Fehir",
+      "Demirci",
+      "G\xF6lmarmara",
+      "G\xF6rdes",
+      "K\u0131rka\u011Fa\xE7",
+      "K\xF6pr\xFCba\u015F\u0131",
+      "Kula",
+      "Salihli",
+      "Sar\u0131g\xF6l",
+      "Saruhanl\u0131",
+      "Selendi",
+      "Soma",
+      "\u015Eehzadeler",
+      "Turgutlu",
+      "Yunusemre"
+    ]
+  },
+  {
+    "id": 47,
+    "name": "Mardin",
+    "lat": 37.3111,
+    "lon": 40.7436,
+    "districts": [
+      "Artuklu",
+      "Darge\xE7it",
+      "Derik",
+      "K\u0131z\u0131ltepe",
+      "Maz\u0131da\u011F\u0131",
+      "Midyat",
+      "Nusaybin",
+      "\xD6merli",
+      "Savur",
+      "Ye\u015Filli"
+    ]
+  },
+  {
+    "id": 33,
+    "name": "Mersin",
+    "lat": 36.8,
+    "lon": 34.6333,
+    "districts": [
+      "Akdeniz",
+      "Anamur",
+      "Ayd\u0131nc\u0131k",
+      "Bozyaz\u0131",
+      "\xC7aml\u0131yayla",
+      "Erdemli",
+      "G\xFClnar",
+      "Mezitli",
+      "Mut",
+      "Silifke",
+      "Tarsus",
+      "Toroslar",
+      "Yeni\u015Fehir"
+    ]
+  },
+  {
+    "id": 48,
+    "name": "Mu\u011Fla",
+    "lat": 37.2167,
+    "lon": 28.3667,
+    "districts": [
+      "Bodrum",
+      "Dalaman",
+      "Dat\xE7a",
+      "Fethiye",
+      "Kavakl\u0131dere",
+      "K\xF6yce\u011Fiz",
+      "Marmaris",
+      "Mente\u015Fe",
+      "Milas",
+      "Ortaca",
+      "Seydikemer",
+      "Ula",
+      "Yata\u011Fan"
+    ]
+  },
+  {
+    "id": 49,
+    "name": "Mu\u015F",
+    "lat": 38.7444,
+    "lon": 41.4961,
+    "districts": [
+      "Bulan\u0131k",
+      "Hask\xF6y",
+      "Korkut",
+      "Malazgirt",
+      "Merkez",
+      "Varto"
+    ]
+  },
+  {
+    "id": 50,
+    "name": "Nev\u015Fehir",
+    "lat": 38.6244,
+    "lon": 34.7231,
+    "districts": [
+      "Ac\u0131g\xF6l",
+      "Avanos",
+      "Derinkuyu",
+      "G\xFCl\u015Fehir",
+      "Hac\u0131bekta\u015F",
+      "Kozakl\u0131",
+      "Merkez",
+      "\xDCrg\xFCp"
+    ]
+  },
+  {
+    "id": 51,
+    "name": "Ni\u011Fde",
+    "lat": 37.9667,
+    "lon": 34.6833,
+    "districts": [
+      "Altunhisar",
+      "Bor",
+      "\xC7amard\u0131",
+      "\xC7iftlik",
+      "Merkez",
+      "Uluk\u0131\u015Fla"
+    ]
+  },
+  {
+    "id": 52,
+    "name": "Ordu",
+    "lat": 40.9833,
+    "lon": 37.8833,
+    "districts": [
+      "Akku\u015F",
+      "Alt\u0131nordu",
+      "Aybast\u0131",
+      "\xC7ama\u015F",
+      "\xC7atalp\u0131nar",
+      "\xC7ayba\u015F\u0131",
+      "Fatsa",
+      "G\xF6lk\xF6y",
+      "G\xFClyal\u0131",
+      "G\xFCrgentepe",
+      "\u0130kizce",
+      "Kabad\xFCz",
+      "Kabata\u015F",
+      "Korgan",
+      "Kumru",
+      "Mesudiye",
+      "Per\u015Fembe",
+      "Ulubey",
+      "\xDCnye"
+    ]
+  },
+  {
+    "id": 80,
+    "name": "Osmaniye",
+    "lat": 37.0667,
+    "lon": 36.25,
+    "districts": [
+      "Bah\xE7e",
+      "D\xFCzi\xE7i",
+      "Hasanbeyli",
+      "Kadirli",
+      "Merkez",
+      "Sumbas",
+      "Toprakkale"
+    ]
+  },
+  {
+    "id": 53,
+    "name": "Rize",
+    "lat": 41.0208,
+    "lon": 40.5236,
+    "districts": [
+      "Arde\u015Fen",
+      "\xC7aml\u0131hem\u015Fin",
+      "\xC7ayeli",
+      "Derepazar\u0131",
+      "F\u0131nd\u0131kl\u0131",
+      "G\xFCneysu",
+      "Hem\u015Fin",
+      "\u0130kizdere",
+      "\u0130yidere",
+      "Kalkandere",
+      "Merkez",
+      "Pazar"
+    ]
+  },
+  {
+    "id": 54,
+    "name": "Sakarya",
+    "lat": 40.7667,
+    "lon": 30.4167,
+    "districts": [
+      "Adapazar\u0131",
+      "Akyaz\u0131",
+      "Arifiye",
+      "Erenler",
+      "Ferizli",
+      "Geyve",
+      "Hendek",
+      "Karap\xFCr\xE7ek",
+      "Karasu",
+      "Kaynarca",
+      "Kocaali",
+      "Pamukova",
+      "Sapanca",
+      "Serdivan",
+      "S\xF6\u011F\xFCtl\xFC",
+      "Tarakl\u0131"
+    ]
+  },
+  {
+    "id": 55,
+    "name": "Samsun",
+    "lat": 41.2864,
+    "lon": 36.3314,
+    "districts": [
+      "19 May\u0131s",
+      "Ala\xE7am",
+      "Asarc\u0131k",
+      "Atakum",
+      "Ayvac\u0131k",
+      "Bafra",
+      "Canik",
+      "\xC7ar\u015Famba",
+      "Havza",
+      "\u0130lkad\u0131m",
+      "Kavak",
+      "Ladik",
+      "Sal\u0131pazar\u0131",
+      "Tekkek\xF6y",
+      "Terme",
+      "Vezirk\xF6pr\xFC",
+      "Yakakent"
+    ]
+  },
+  {
+    "id": 56,
+    "name": "Siirt",
+    "lat": 37.9444,
+    "lon": 41.9333,
+    "districts": [
+      "Baykan",
+      "Eruh",
+      "Kurtalan",
+      "Merkez",
+      "Pervari",
+      "\u015Eirvan",
+      "Tillo"
+    ]
+  },
+  {
+    "id": 57,
+    "name": "Sinop",
+    "lat": 42.0236,
+    "lon": 35.1531,
+    "districts": [
+      "Ayanc\u0131k",
+      "Boyabat",
+      "Dikmen",
+      "Dura\u011Fan",
+      "Erfelek",
+      "Gerze",
+      "Merkez",
+      "Sarayd\xFCz\xFC",
+      "T\xFCrkeli"
+    ]
+  },
+  {
+    "id": 58,
+    "name": "Sivas",
+    "lat": 39.7472,
+    "lon": 37.0175,
+    "districts": [
+      "Ak\u0131nc\u0131lar",
+      "Alt\u0131nyayla",
+      "Divri\u011Fi",
+      "Do\u011Fan\u015Far",
+      "Gemerek",
+      "G\xF6lova",
+      "G\xFCr\xFCn",
+      "Hafik",
+      "\u0130mranl\u0131",
+      "Kangal",
+      "Koyulhisar",
+      "Merkez",
+      "Su\u015Fehri",
+      "\u015Eark\u0131\u015Fla",
+      "Ula\u015F",
+      "Y\u0131ld\u0131zeli",
+      "Zara"
+    ]
+  },
+  {
+    "id": 63,
+    "name": "\u015Eanl\u0131urfa",
+    "lat": 37.15,
+    "lon": 38.8,
+    "districts": [
+      "Ak\xE7akale",
+      "Birecik",
+      "Bozova",
+      "Ceylanp\u0131nar",
+      "Eyy\xFCbiye",
+      "Halfeti",
+      "Haliliye",
+      "Harran",
+      "Hilvan",
+      "Karak\xF6pr\xFC",
+      "Siverek",
+      "Suru\xE7",
+      "Viran\u015Fehir"
+    ]
+  },
+  {
+    "id": 73,
+    "name": "\u015E\u0131rnak",
+    "lat": 37.5167,
+    "lon": 42.4667,
+    "districts": [
+      "Beyt\xFC\u015F\u015Febap",
+      "Cizre",
+      "G\xFC\xE7l\xFCkonak",
+      "\u0130dil",
+      "Merkez",
+      "Silopi",
+      "Uludere"
+    ]
+  },
+  {
+    "id": 59,
+    "name": "Tekirda\u011F",
+    "lat": 40.9833,
+    "lon": 27.5167,
+    "districts": [
+      "\xC7erkezk\xF6y",
+      "\xC7orlu",
+      "Ergene",
+      "Hayrabolu",
+      "Kapakl\u0131",
+      "Malkara",
+      "Marmaraere\u011Flisi",
+      "Muratl\u0131",
+      "Saray",
+      "S\xFCleymanpa\u015Fa",
+      "\u015Eark\xF6y"
+    ]
+  },
+  {
+    "id": 60,
+    "name": "Tokat",
+    "lat": 40.3167,
+    "lon": 36.55,
+    "districts": [
+      "Almus",
+      "Artova",
+      "Ba\u015F\xE7iftlik",
+      "Erbaa",
+      "Merkez",
+      "Niksar",
+      "Pazar",
+      "Re\u015Fadiye",
+      "Sulusaray",
+      "Turhal",
+      "Ye\u015Filyurt",
+      "Zile"
+    ]
+  },
+  {
+    "id": 61,
+    "name": "Trabzon",
+    "lat": 41,
+    "lon": 39.7333,
+    "districts": [
+      "Ak\xE7aabat",
+      "Arakl\u0131",
+      "Arsin",
+      "Be\u015Fikd\xFCz\xFC",
+      "\xC7ar\u015F\u0131ba\u015F\u0131",
+      "\xC7aykara",
+      "Dernekpazar\u0131",
+      "D\xFCzk\xF6y",
+      "Hayrat",
+      "K\xF6pr\xFCba\u015F\u0131",
+      "Ma\xE7ka",
+      "Of",
+      "Ortahisar",
+      "S\xFCrmene",
+      "\u015Ealpazar\u0131",
+      "Tonya",
+      "Vakf\u0131kebir",
+      "Yomra"
+    ]
+  },
+  {
+    "id": 62,
+    "name": "Tunceli",
+    "lat": 39.1167,
+    "lon": 39.5333,
+    "districts": [
+      "\xC7emi\u015Fgezek",
+      "Hozat",
+      "Mazgirt",
+      "Merkez",
+      "Naz\u0131miye",
+      "Ovac\u0131k",
+      "Pertek",
+      "P\xFCl\xFCm\xFCr"
+    ]
+  },
+  {
+    "id": 64,
+    "name": "U\u015Fak",
+    "lat": 38.6833,
+    "lon": 29.4167,
+    "districts": [
+      "Banaz",
+      "E\u015Fme",
+      "Karahall\u0131",
+      "Merkez",
+      "Sivasl\u0131",
+      "Ulubey"
+    ]
+  },
+  {
+    "id": 65,
+    "name": "Van",
+    "lat": 38.5,
+    "lon": 43.4,
+    "districts": [
+      "Bah\xE7esaray",
+      "Ba\u015Fkale",
+      "\xC7ald\u0131ran",
+      "\xC7atak",
+      "Edremit",
+      "Erci\u015F",
+      "Geva\u015F",
+      "G\xFCrp\u0131nar",
+      "\u0130pekyolu",
+      "Muradiye",
+      "\xD6zalp",
+      "Saray",
+      "Tu\u015Fba"
+    ]
+  },
+  {
+    "id": 77,
+    "name": "Yalova",
+    "lat": 40.65,
+    "lon": 29.2667,
+    "districts": [
+      "Alt\u0131nova",
+      "Armutlu",
+      "\xC7\u0131narc\u0131k",
+      "\xC7iftlikk\xF6y",
+      "Merkez",
+      "Termal"
+    ]
+  },
+  {
+    "id": 66,
+    "name": "Yozgat",
+    "lat": 39.8167,
+    "lon": 34.8167,
+    "districts": [
+      "Akda\u011Fmadeni",
+      "Ayd\u0131nc\u0131k",
+      "Bo\u011Fazl\u0131yan",
+      "\xC7and\u0131r",
+      "\xC7ay\u0131ralan",
+      "\xC7ekerek",
+      "Kad\u0131\u015Fehri",
+      "Merkez",
+      "Saraykent",
+      "Sar\u0131kaya",
+      "Sorgun",
+      "\u015Eefaatli",
+      "Yenifak\u0131l\u0131",
+      "Yerk\xF6y"
+    ]
+  },
+  {
+    "id": 67,
+    "name": "Zonguldak",
+    "lat": 41.45,
+    "lon": 31.8,
+    "districts": [
+      "Alapl\u0131",
+      "\xC7aycuma",
+      "Devrek",
+      "Ere\u011Fli",
+      "G\xF6k\xE7ebey",
+      "Kilimli",
+      "Kozlu",
+      "Merkez"
+    ]
+  }
+];
+function normalizeTurkishText(text2) {
+  if (!text2) return "";
+  return text2.trim().replace(/İ/g, "i").replace(/I/g, "i").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/ğ/g, "g").replace(/ü/g, "u").replace(/ş/g, "s").replace(/ı/g, "i").replace(/ö/g, "o").replace(/ç/g, "c").replace(/[^a-z0-9]/g, " ").replace(/\s+/g, " ").trim();
+}
+var KNOWN_DISTRICT_COORDS = {
+  "kadikoy-istanbul": { lat: 40.9788, lon: 29.0827 },
+  "besiktas-istanbul": { lat: 41.0422, lon: 29.0067 },
+  "sisli-istanbul": { lat: 41.0602, lon: 28.9877 },
+  "fatih-istanbul": { lat: 41.0186, lon: 28.9497 },
+  "uskudar-istanbul": { lat: 41.0267, lon: 29.0156 },
+  "sariyer-istanbul": { lat: 41.1663, lon: 29.0504 },
+  "bakirkoy-istanbul": { lat: 40.9792, lon: 28.8717 },
+  "beyoglu-istanbul": { lat: 41.037, lon: 28.9763 },
+  "atasehir-istanbul": { lat: 40.9847, lon: 29.1067 },
+  "maltepe-istanbul": { lat: 40.9247, lon: 29.1311 },
+  "pendik-istanbul": { lat: 40.8744, lon: 29.2333 },
+  "kartal-istanbul": { lat: 40.8886, lon: 29.1856 },
+  "cankaya-ankara": { lat: 39.9042, lon: 32.8597 },
+  "yenimahalle-ankara": { lat: 39.9719, lon: 32.8028 },
+  "kecioren-ankara": { lat: 40.0197, lon: 32.8611 },
+  "etimesgut-ankara": { lat: 39.9519, lon: 32.6844 },
+  "konak-izmir": { lat: 38.4192, lon: 27.1287 },
+  "karsiyaka-izmir": { lat: 38.4594, lon: 27.1106 },
+  "bornova-izmir": { lat: 38.465, lon: 27.2181 },
+  "buca-izmir": { lat: 38.3878, lon: 27.1778 },
+  "cesme-izmir": { lat: 38.3236, lon: 26.3056 },
+  "nilufer-bursa": { lat: 40.2144, lon: 28.9839 },
+  "osmangazi-bursa": { lat: 40.1989, lon: 29.0608 },
+  "muratpasa-antalya": { lat: 36.8841, lon: 30.7056 },
+  "konyaalti-antalya": { lat: 36.8617, lon: 30.6361 },
+  "alanya-antalya": { lat: 36.5438, lon: 31.9997 }
+};
+function searchTurkishLocations(query, limit = 8) {
+  const norm = normalizeTurkishText(query);
+  if (!norm || norm.length < 2) return [];
+  const results = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const prov of TURKISH_PROVINCES) {
+    const pNorm = normalizeTurkishText(prov.name);
+    if (pNorm.startsWith(norm) || pNorm === norm) {
+      const key = prov.name;
+      if (!seen.has(key)) {
+        seen.add(key);
+        results.push({ label: prov.name, province: prov.name, lat: prov.lat, lon: prov.lon });
+      }
+    }
+  }
+  for (const prov of TURKISH_PROVINCES) {
+    const pNorm = normalizeTurkishText(prov.name);
+    for (const dist of prov.districts) {
+      const dNorm = normalizeTurkishText(dist);
+      const combo1 = `${dNorm} ${pNorm}`;
+      const combo2 = `${pNorm} ${dNorm}`;
+      if (dNorm.startsWith(norm) || dNorm === norm || combo1.includes(norm) || combo2.includes(norm)) {
+        const key = `${dist}, ${prov.name}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          const coordKey = `${dNorm}-${pNorm}`;
+          const coords = KNOWN_DISTRICT_COORDS[coordKey] || { lat: prov.lat, lon: prov.lon };
+          results.push({
+            label: key,
+            province: prov.name,
+            district: dist,
+            lat: coords.lat,
+            lon: coords.lon
+          });
+          if (results.length >= limit) return results;
+        }
+      }
+    }
+  }
+  if (results.length < limit) {
+    for (const prov of TURKISH_PROVINCES) {
+      const pNorm = normalizeTurkishText(prov.name);
+      if (pNorm.includes(norm) && !seen.has(prov.name)) {
+        seen.add(prov.name);
+        results.push({ label: prov.name, province: prov.name, lat: prov.lat, lon: prov.lon });
+        if (results.length >= limit) return results;
+      }
+    }
+  }
+  return results;
+}
+function resolveTurkishLocation(query) {
+  const matches = searchTurkishLocations(query, 1);
+  if (matches[0]) {
+    return {
+      latitude: matches[0].lat,
+      longitude: matches[0].lon,
+      label: matches[0].label
+    };
+  }
+  return null;
+}
+
 // backend/weather.ts
 var WMO_CODES = {
   0: "A\xE7\u0131k",
@@ -753,13 +2472,21 @@ var RAIN_CODES = /* @__PURE__ */ new Set([51, 53, 55, 56, 57, 61, 63, 65, 66, 67
 var SNOW_CODES = /* @__PURE__ */ new Set([71, 73, 75, 77, 85, 86]);
 var WeatherError = class extends Error {
 };
+var isCustomFetcher = false;
 var fetcher = (url) => fetch(url, { signal: AbortSignal.timeout(8e3) });
+var geocodeCache = /* @__PURE__ */ new Map();
 async function geocode(name) {
+  const normKey = name.trim().toLowerCase();
+  const cached = geocodeCache.get(normKey);
+  if (cached && cached.expires > Date.now()) return cached.data;
   const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(name)}&count=10&language=tr&format=json&countryCode=TR`;
   const res = await fetcher(url);
   if (!res.ok) throw new WeatherError(`Konum servisi hata verdi (${res.status}).`);
   const data = await res.json();
-  return Array.isArray(data?.results) ? data.results : [];
+  const results = Array.isArray(data?.results) ? data.results : [];
+  if (geocodeCache.size > 200) geocodeCache.clear();
+  geocodeCache.set(normKey, { expires: Date.now() + 24 * 60 * 60 * 1e3, data: results });
+  return results;
 }
 async function resolveLocation(input) {
   if (!input) return null;
@@ -773,6 +2500,11 @@ async function resolveLocation(input) {
     const province = (location.province || "").trim();
     const district = (location.district || "").trim();
     if (!province) return null;
+    if (!isCustomFetcher) {
+      const placeQuery = district ? `${district}, ${province}` : province;
+      const local = resolveTurkishLocation(placeQuery) || (district ? resolveTurkishLocation(district) : null) || resolveTurkishLocation(province);
+      if (local) return local;
+    }
     if (district) {
       const found = await findDistrict(province, district);
       if (found) return found;
@@ -781,9 +2513,17 @@ async function resolveLocation(input) {
   }
   const query = (location.query || "").trim();
   if (query.length < 2) return null;
+  if (!isCustomFetcher) {
+    const localMatch = resolveTurkishLocation(query);
+    if (localMatch) return localMatch;
+  }
   const parts = query.split(",").map((p) => p.trim()).filter(Boolean);
   if (parts.length >= 2) {
     const [first, second] = parts;
+    if (!isCustomFetcher) {
+      const localCombo = resolveTurkishLocation(`${first}, ${second}`) || resolveTurkishLocation(`${second}, ${first}`) || resolveTurkishLocation(first) || resolveTurkishLocation(second);
+      if (localCombo) return localCombo;
+    }
     return await findDistrict(second, first) || await findDistrict(first, second) || await findProvince(second) || await findProvince(first);
   }
   const results = await geocode(query);

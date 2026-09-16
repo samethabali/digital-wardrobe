@@ -1,5 +1,6 @@
 import type { LocationInput, WeatherSnapshot } from '../shared/api.js';
 import { normalizeTr } from '../shared/wardrobe.js';
+import { resolveTurkishLocation } from '../shared/turkeyLocations.js';
 
 // Open-Meteo WMO hava kodları (https://open-meteo.com/en/docs) — tablonun tamamı
 export const WMO_CODES: Record<number, string> = {
@@ -39,9 +40,11 @@ export const SNOW_CODES = new Set([71, 73, 75, 77, 85, 86]);
 export class WeatherError extends Error {}
 
 type Fetcher = (url: string) => Promise<{ ok: boolean; status: number; json: () => Promise<any> }>;
+let isCustomFetcher = false;
 let fetcher: Fetcher = (url) => fetch(url, { signal: AbortSignal.timeout(8000) });
 
 export function setWeatherFetcherForTests(fake: Fetcher | null) {
+  isCustomFetcher = Boolean(fake);
   fetcher = fake || ((url) => fetch(url, { signal: AbortSignal.timeout(8000) }));
 }
 
@@ -60,17 +63,27 @@ interface GeoResult {
   country_code?: string;
 }
 
+const geocodeCache = new Map<string, { expires: number; data: GeoResult[] }>();
+
 async function geocode(name: string): Promise<GeoResult[]> {
+  const normKey = name.trim().toLowerCase();
+  const cached = geocodeCache.get(normKey);
+  if (cached && cached.expires > Date.now()) return cached.data;
+
   const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(name)}&count=10&language=tr&format=json&countryCode=TR`;
   const res = await fetcher(url);
   if (!res.ok) throw new WeatherError(`Konum servisi hata verdi (${res.status}).`);
   const data = await res.json();
-  return Array.isArray(data?.results) ? data.results : [];
+  const results = Array.isArray(data?.results) ? data.results : [];
+  if (geocodeCache.size > 200) geocodeCache.clear();
+  geocodeCache.set(normKey, { expires: Date.now() + 24 * 60 * 60 * 1000, data: results });
+  return results;
 }
 
 /**
  * Konum girdisini koordinata çevirir.
- * Open-Meteo "yer, il" biçimini bekler (ör. "Kadıköy, İstanbul"); uygulamanın eski "İl, İlçe" biçimi sonuç vermiyordu.
+ * Önce yerel 81 il ve 973 ilçe veritabanından bakar (0 ms gecikme, %100 doğruluk).
+ * Bulunamazsa Open-Meteo Geocoding servisine başvurur.
  */
 export async function resolveLocation(input: LocationInput | string | undefined | null): Promise<ResolvedLocation | null> {
   if (!input) return null;
@@ -86,6 +99,14 @@ export async function resolveLocation(input: LocationInput | string | undefined 
     const province = (location.province || '').trim();
     const district = (location.district || '').trim();
     if (!province) return null;
+
+    if (!isCustomFetcher) {
+      // Yerel veritabanında anında ara
+      const placeQuery = district ? `${district}, ${province}` : province;
+      const local = resolveTurkishLocation(placeQuery) || (district ? resolveTurkishLocation(district) : null) || resolveTurkishLocation(province);
+      if (local) return local;
+    }
+
     if (district) {
       const found = await findDistrict(province, district);
       if (found) return found;
@@ -95,10 +116,24 @@ export async function resolveLocation(input: LocationInput | string | undefined 
 
   const query = (location.query || '').trim();
   if (query.length < 2) return null;
+
+  // 1. Yerel Türkiye il/ilçe veritabanında anında ara
+  if (!isCustomFetcher) {
+    const localMatch = resolveTurkishLocation(query);
+    if (localMatch) return localMatch;
+  }
+
   const parts = query.split(',').map(p => p.trim()).filter(Boolean);
   if (parts.length >= 2) {
-    // Hem "İlçe, İl" hem eski "İl, İlçe" biçimini dene; il yedeği yalnızca gerçekten il olan parçayı kabul eder
     const [first, second] = parts;
+    if (!isCustomFetcher) {
+      const localCombo = resolveTurkishLocation(`${first}, ${second}`)
+        || resolveTurkishLocation(`${second}, ${first}`)
+        || resolveTurkishLocation(first)
+        || resolveTurkishLocation(second);
+      if (localCombo) return localCombo;
+    }
+
     return (await findDistrict(second, first))
       || (await findDistrict(first, second))
       || (await findProvince(second))

@@ -15,18 +15,22 @@ interface OutfitPlannerProps {
   onCollabResult?: (result: CollabResult & { friendName: string; friendItems: WardrobeItem[] }) => void;
 }
 
-const DEFAULT_TURKISH_PROVINCES = [
-  'Adana', 'Adıyaman', 'Afyonkarahisar', 'Ağrı', 'Amasya', 'Ankara', 'Antalya', 'Artvin',
-  'Aydın', 'Balıkesir', 'Bilecik', 'Bingöl', 'Bitlis', 'Bolu', 'Burdur', 'Bursa', 'Çanakkale',
-  'Çankırı', 'Çorum', 'Denizli', 'Diyarbakır', 'Edirne', 'Elazığ', 'Erzincan', 'Erzurum',
-  'Eskişehir', 'Gaziantep', 'Giresun', 'Gümüşhane', 'Hakkari', 'Hatay', 'Isparta', 'Mersin',
-  'İstanbul', 'İzmir', 'Kars', 'Kastamonu', 'Kayseri', 'Kırklareli', 'Kırşehir', 'Kocaeli',
-  'Konya', 'Kütahya', 'Malatya', 'Manisa', 'Kahramanmaraş', 'Mardin', 'Muğla', 'Muş',
-  'Nevşehir', 'Niğde', 'Ordu', 'Rize', 'Sakarya', 'Samsun', 'Siirt', 'Sinop', 'Sivas',
-  'Tekirdağ', 'Tokat', 'Trabzon', 'Tunceli', 'Şanlıurfa', 'Uşak', 'Van', 'Yozgat', 'Zonguldak',
-  'Aksaray', 'Bayburt', 'Karaman', 'Kırıkkale', 'Batman', 'Şırnak', 'Bartın', 'Ardahan',
-  'Iğdır', 'Yalova', 'Karabük', 'Kilis', 'Osmaniye', 'Düzce'
-].map((name, id) => ({ id: id + 1, name, districts: [] }));
+import {
+  TURKISH_PROVINCES,
+  searchTurkishLocations,
+  findClosestProvince,
+  LocationSearchResult,
+  TurkishProvince
+} from '../../shared/turkeyLocations';
+
+const POPULAR_CITIES: LocationSearchResult[] = [
+  { label: 'Kadıköy, İstanbul', province: 'İstanbul', district: 'Kadıköy', lat: 40.9788, lon: 29.0827 },
+  { label: 'İstanbul', province: 'İstanbul', lat: 41.0138, lon: 28.9497 },
+  { label: 'Ankara', province: 'Ankara', lat: 39.9208, lon: 32.8541 },
+  { label: 'İzmir', province: 'İzmir', lat: 38.4188, lon: 27.1287 },
+  { label: 'Bursa', province: 'Bursa', lat: 40.1822, lon: 29.0611 },
+  { label: 'Antalya', province: 'Antalya', lat: 36.8841, lon: 30.7056 },
+];
 
 export default function OutfitPlanner({
   items,
@@ -40,8 +44,21 @@ export default function OutfitPlanner({
 }: OutfitPlannerProps) {
   const [showFilters, setShowFilters] = React.useState(false);
   const [isQuickMode, setIsQuickMode] = React.useState(true);
+  
+  // Konum durumu — başlangıçta Kadıköy, İstanbul koordinatlarıyla hazır gelir
+  const [selectedCityLabel, setSelectedCityLabel] = React.useState<string>('Kadıköy, İstanbul');
+  const [locationSearch, setLocationSearch] = React.useState('');
+  const [locationSearchResults, setLocationSearchResults] = React.useState<LocationSearchResult[]>([]);
+  const [showLocationSearchDropdown, setShowLocationSearchDropdown] = React.useState(false);
+  const [isLocating, setIsLocating] = React.useState(false);
+
   const [formData, setFormData] = React.useState<StylistRequest>({
-    location: '',
+    location: {
+      type: 'coords',
+      lat: 40.9788,
+      lon: 29.0827,
+      label: 'Kadıköy, İstanbul',
+    },
     event: 'Gündelik',
     effort: 5,
     mood: 'Rahat',
@@ -55,12 +72,13 @@ export default function OutfitPlanner({
     items: false
   });
 
-  const [provinces, setProvinces] = React.useState<any[]>(DEFAULT_TURKISH_PROVINCES);
-  const [districts, setDistricts] = React.useState<any[]>([]);
-  const [selectedProvince, setSelectedProvince] = React.useState('');
-  const [selectedDistrict, setSelectedDistrict] = React.useState('');
-  const [isLocating, setIsLocating] = React.useState(false);
-  const [autoLocation, setAutoLocation] = React.useState<string | null>(null);
+  // İl ve İlçe listeleri (81 il ve 973 ilçe anında hazır, harici API beklemez)
+  const provinces = TURKISH_PROVINCES;
+  const [selectedProvince, setSelectedProvince] = React.useState('İstanbul');
+  const [selectedDistrict, setSelectedDistrict] = React.useState('Kadıköy');
+  const [districts, setDistricts] = React.useState<string[]>(
+    TURKISH_PROVINCES.find(p => p.name === 'İstanbul')?.districts || []
+  );
 
   // ─── Collab State ──────────────────────────────────────────────────────────
   const [collabUser, setCollabUser] = React.useState<ExploreProfile | null>(initialCollabUser || null);
@@ -81,19 +99,6 @@ export default function OutfitPlanner({
     }
   }, [initialCollabUser]);
 
-  // İlleri API'den çek
-  React.useEffect(() => {
-    fetch('https://turkiyeapi.dev/api/v1/provinces')
-      .then(res => res.json())
-      .then(data => {
-        if (data.status === 'OK') {
-          const sorted = data.data.sort((a: any, b: any) => a.name.localeCompare(b.name, 'tr'));
-          setProvinces(sorted);
-        }
-      })
-      .catch(console.error);
-  }, []);
-
   // Keşfet kullanıcılarını önceden yükle (collab arama için)
   React.useEffect(() => {
     const token = localStorage.getItem('aura_token');
@@ -103,13 +108,45 @@ export default function OutfitPlanner({
       .catch(console.error);
   }, []);
 
+  // Konum arama — kullanıcı yazdıkça anında 81 il ve 973 ilçe arasından öneriler listeler
+  React.useEffect(() => {
+    if (locationSearch.trim().length >= 2) {
+      const results = searchTurkishLocations(locationSearch, 7);
+      setLocationSearchResults(results);
+      setShowLocationSearchDropdown(results.length > 0);
+    } else {
+      setLocationSearchResults([]);
+      setShowLocationSearchDropdown(false);
+    }
+  }, [locationSearch]);
+
+  const handleSelectLocation = (loc: LocationSearchResult) => {
+    setSelectedCityLabel(loc.label);
+    setLocationSearch('');
+    setShowLocationSearchDropdown(false);
+    setSelectedProvince(loc.province);
+    if (loc.district) setSelectedDistrict(loc.district);
+    setFormData(prev => ({
+      ...prev,
+      location: {
+        type: 'coords',
+        lat: loc.lat,
+        lon: loc.lon,
+        label: loc.label,
+      }
+    }));
+    onNotify(`📍 Konum seçildi: ${loc.label}`, 'info');
+  };
+
   // İl değiştiğinde ilçeleri güncelle
   React.useEffect(() => {
     if (selectedProvince) {
       const prov = provinces.find(p => p.name === selectedProvince);
       if (prov) {
-        const sortedD = [...prov.districts].sort((a: any, b: any) => a.name.localeCompare(b.name, 'tr'));
-        setDistricts(sortedD);
+        setDistricts(prov.districts);
+        if (!prov.districts.includes(selectedDistrict)) {
+          setSelectedDistrict(prov.districts[0] || '');
+        }
       } else {
         setDistricts([]);
       }
@@ -118,17 +155,36 @@ export default function OutfitPlanner({
     }
   }, [selectedProvince, provinces]);
 
-  // İl veya ilçe değiştiğinde formData'yı güncelle (Open-Meteo için "İlçe, İl" sırası)
-  React.useEffect(() => {
-    if (autoLocation) return;
-    if (selectedProvince && selectedDistrict) {
-      setFormData(prev => ({ ...prev, location: `${selectedDistrict}, ${selectedProvince}` }));
-    } else if (selectedProvince) {
-      setFormData(prev => ({ ...prev, location: selectedProvince }));
-    } else {
-      setFormData(prev => ({ ...prev, location: '' }));
-    }
-  }, [selectedProvince, selectedDistrict, autoLocation]);
+  const handleProvinceSelect = (prov: string) => {
+    setSelectedProvince(prov);
+    const provObj = provinces.find(p => p.name === prov);
+    const firstDist = provObj?.districts[0] || '';
+    setSelectedDistrict(firstDist);
+    const label = firstDist ? `${firstDist}, ${prov}` : prov;
+    setSelectedCityLabel(label);
+    setFormData(prev => ({
+      ...prev,
+      location: {
+        type: 'place',
+        province: prov,
+        district: firstDist || undefined,
+      }
+    }));
+  };
+
+  const handleDistrictSelect = (dist: string) => {
+    setSelectedDistrict(dist);
+    const label = dist ? `${dist}, ${selectedProvince}` : selectedProvince;
+    setSelectedCityLabel(label);
+    setFormData(prev => ({
+      ...prev,
+      location: {
+        type: 'place',
+        province: selectedProvince,
+        district: dist || undefined,
+      }
+    }));
+  };
 
   // Collab arama — debounce ile
   React.useEffect(() => {
@@ -146,53 +202,53 @@ export default function OutfitPlanner({
 
   const handleCurrentLocation = (autoSubmit?: boolean) => {
     if (!navigator.geolocation) {
-      onNotify('Tarayıcınız konum özelliğini desteklemiyor.', 'error');
+      onNotify('Tarayıcınız konum özelliğini desteklemiyor. Lütfen şehri hazır butonlardan seçin.', 'error');
       return;
     }
     setIsLocating(true);
     navigator.geolocation.getCurrentPosition(
-      async (pos) => {
+      (pos) => {
+        setIsLocating(false);
         const { latitude, longitude } = pos.coords;
-        try {
-          const res = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${latitude}&longitude=${longitude}&localityLanguage=tr`);
-          const data = await res.json();
-          let province = data.principalSubdivision || data.city || '';
-          let district = data.locality || '';
-          const locationStr = [district, province].filter(Boolean).join(', ');
-          if (locationStr) {
-            setAutoLocation(locationStr);
-            setFormData(prev => ({ ...prev, location: locationStr }));
-            setSelectedProvince('');
-            setSelectedDistrict('');
-            if (autoSubmit) {
-              onGenerate({ ...formData, location: locationStr, event: 'Gündelik', effort: 5, mood: 'Rahat', ignoreWeather: false });
-            }
-          } else {
-            onNotify('Konum bilgisi anlaşılamadı.', 'error');
-          }
-        } catch {
-          onNotify('Konum çözümlenemedi.', 'error');
-        } finally {
-          setIsLocating(false);
+        const closest = findClosestProvince(latitude, longitude);
+        const label = `${closest.name} (Mevcut Konum)`;
+        setSelectedCityLabel(label);
+        setSelectedProvince(closest.name);
+        setSelectedDistrict('');
+        const locInput = {
+          type: 'coords' as const,
+          lat: latitude,
+          lon: longitude,
+          label: closest.name,
+        };
+        setFormData(prev => ({ ...prev, location: locInput }));
+        onNotify(`📍 Konumunuz tespit edildi: ${closest.name}`, 'success');
+
+        if (autoSubmit) {
+          onGenerate({
+            ...formData,
+            location: locInput,
+            event: 'Gündelik',
+            effort: 5,
+            mood: 'Rahat',
+            ignoreWeather: false,
+          });
         }
       },
-      () => {
+      (err) => {
         setIsLocating(false);
-        const fallbackLoc = 'Kadıköy, İstanbul';
-        setAutoLocation(fallbackLoc);
-        setFormData(prev => ({ ...prev, location: fallbackLoc }));
-        onNotify('Konum izni alınamadı; varsayılan olarak Kadıköy, İstanbul havası kullanılıyor.', 'info');
-        if (autoSubmit) {
-          onGenerate({ ...formData, location: fallbackLoc, event: 'Gündelik', effort: 5, mood: 'Rahat', ignoreWeather: false });
+        console.warn('Geolocation error:', err);
+        onNotify('Konum izni alınamadı. Lütfen hazır şehir butonlarından veya arama kutusundan şehrinizi seçin.', 'info');
+        if (autoSubmit && formData.location) {
+          onGenerate({ ...formData, event: 'Gündelik', effort: 5, mood: 'Rahat', ignoreWeather: false });
         }
-      }
+      },
+      { enableHighAccuracy: false, timeout: 6000, maximumAge: 300000 }
     );
   };
 
   const handleQuickGenerate = () => {
-    if (autoLocation) {
-      onGenerate({ ...formData, location: autoLocation, event: 'Gündelik', effort: 5, mood: 'Rahat', ignoreWeather: false });
-    } else if (formData.location) {
+    if (formData.location) {
       onGenerate({ ...formData, event: 'Gündelik', effort: 5, mood: 'Rahat', ignoreWeather: false });
     } else {
       handleCurrentLocation(true);
@@ -294,20 +350,101 @@ export default function OutfitPlanner({
             className="bg-gradient-to-br from-indigo-50/50 to-purple-50/50 dark:from-indigo-900/10 dark:to-purple-900/10 p-8 rounded-3xl w-full border border-indigo-100/50 dark:border-indigo-500/10 relative overflow-hidden shadow-sm"
           >
             <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-indigo-500 to-purple-500"></div>
-            <Zap className="w-12 h-12 text-indigo-500 mx-auto mb-4" />
-            <h4 className="text-lg font-bold text-primary mb-2">Tek Tıkla Kombin</h4>
-            <p className="text-sm text-text-secondary mb-6 px-4">
-              İş, okul veya gündelik kullanım için hızlıca en uygun kombini bul.
-              {autoLocation ? (
-                <span className="block mt-2 font-medium text-indigo-600 dark:text-indigo-400">Konum: {autoLocation}</span>
-              ) : (
-                <span className="block mt-2 text-text-secondary/60">Konumun otomatik bulunacak.</span>
-              )}
+            <Zap className="w-10 h-10 text-indigo-500 mx-auto mb-3" />
+            <h4 className="text-lg font-bold text-primary mb-1">Tek Tıkla Kombin</h4>
+            <p className="text-xs text-text-secondary mb-3 px-2">
+              Günün hava durumuna ve dolabına en uygun kombini anında hazırla.
             </p>
+
+            {/* Seçili Konum Rozeti */}
+            <div className="flex items-center justify-between bg-primary/80 dark:bg-black/30 border border-indigo-200/70 dark:border-indigo-500/20 py-2 px-3 rounded-2xl mb-3 max-w-sm mx-auto shadow-sm">
+              <div className="flex items-center gap-2 overflow-hidden">
+                <MapPin className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                <span className="text-xs font-bold text-text-primary truncate">{selectedCityLabel}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleCurrentLocation(false)}
+                disabled={isLocating}
+                title="Mevcut konumumu GPS ile bul"
+                className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 flex items-center gap-1 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-1 rounded-lg transition-colors shrink-0"
+              >
+                {isLocating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Navigation className="w-3 h-3" />}
+                <span>GPS</span>
+              </button>
+            </div>
+
+            {/* Hızlı Şehir Hapları */}
+            <div className="flex flex-wrap items-center justify-center gap-1.5 mb-3 max-w-md mx-auto">
+              {POPULAR_CITIES.map(c => {
+                const isSelected = selectedCityLabel === c.label || selectedCityLabel === c.name;
+                return (
+                  <button
+                    key={c.label}
+                    type="button"
+                    onClick={() => handleSelectLocation(c)}
+                    className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg border transition-all ${
+                      isSelected
+                        ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm shadow-indigo-600/20'
+                        : 'bg-primary/90 border-border-color text-text-secondary hover:text-text-primary hover:border-indigo-300'
+                    }`}
+                  >
+                    {c.name}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Hızlı Şehir Arama Girişi */}
+            <div className="relative mb-4 max-w-sm mx-auto text-left">
+              <div className="flex items-center gap-2 bg-primary border border-border-color rounded-xl px-3 py-1.5 text-xs focus-within:ring-2 focus-within:ring-indigo-400/30">
+                <Search className="w-3.5 h-3.5 text-text-secondary shrink-0" />
+                <input
+                  type="text"
+                  placeholder="Başka bir şehir/ilçe ara..."
+                  value={locationSearch}
+                  onChange={e => setLocationSearch(e.target.value)}
+                  className="w-full bg-transparent text-xs text-text-primary placeholder-text-secondary/60 focus:outline-none"
+                />
+                {locationSearch && (
+                  <button type="button" onClick={() => setLocationSearch('')} className="p-0.5 text-text-secondary hover:text-text-primary">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {/* Arama Önerileri Dropdown */}
+              <AnimatePresence>
+                {showLocationSearchDropdown && locationSearchResults.length > 0 && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -4 }}
+                    className="absolute top-full left-0 right-0 mt-1 bg-secondary border border-border-color rounded-xl shadow-2xl z-50 overflow-hidden max-h-48 overflow-y-auto"
+                  >
+                    {locationSearchResults.map((item, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => handleSelectLocation(item)}
+                        className="w-full flex items-center justify-between px-3.5 py-2 hover:bg-primary text-left border-b border-border-color/30 last:border-0 transition-colors"
+                      >
+                        <div className="flex items-center gap-2">
+                          <MapPin className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                          <span className="text-xs font-semibold text-text-primary">{item.label}</span>
+                        </div>
+                        <span className="text-[10px] text-text-secondary bg-primary px-1.5 py-0.5 rounded">{item.province}</span>
+                      </button>
+                    ))}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
             <button
               onClick={handleQuickGenerate}
               disabled={isLoading}
-              className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-semibold text-sm shadow-xl shadow-indigo-600/20 hover:bg-indigo-700 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+              className="w-full py-3.5 bg-indigo-600 text-white rounded-2xl font-semibold text-sm shadow-xl shadow-indigo-600/20 hover:bg-indigo-700 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
             >
               {isLoading ? (
                 <div className="flex flex-col items-center">
@@ -428,10 +565,12 @@ export default function OutfitPlanner({
             )}
           </div>
 
-          {/* ─── Zorunlu Alanlar ─────────────────────────────────────────── */}
+          {/* ─── Zorunlu Alanlar: Konum ve Etkinlik ─────────────────────── */}
           <div className="space-y-4 pt-2 border-t border-border-color">
             <div className="flex items-center justify-between">
-              <label className="text-[11px] font-bold text-text-secondary uppercase tracking-wider">Zorunlu Alanlar</label>
+              <label className="text-[11px] font-bold text-text-secondary uppercase tracking-wider">
+                Konum ve Hava Durumu
+              </label>
               <button
                 type="button"
                 onClick={() => handleCurrentLocation(false)}
@@ -439,68 +578,141 @@ export default function OutfitPlanner({
                 className="flex items-center space-x-1 text-xs text-indigo-600 dark:text-indigo-400 font-semibold hover:text-indigo-800 transition-colors disabled:opacity-50"
               >
                 {isLocating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Navigation className="w-3 h-3" />}
-                <span>Konumumu Bul</span>
+                <span>Konumumu Bul (GPS)</span>
               </button>
             </div>
-            <div className="space-y-3">
-              {autoLocation ? (
-                <div className="flex items-center justify-between bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-500/20 rounded-xl px-4 py-3">
-                  <div className="flex items-center space-x-3 overflow-hidden">
-                    <MapPin className="w-5 h-5 text-indigo-600 dark:text-indigo-400 flex-shrink-0" />
-                    <div className="flex flex-col truncate">
-                      <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider">Otomatik Konum</span>
-                      <span className="text-sm font-semibold text-indigo-900 dark:text-indigo-100 truncate">{autoLocation}</span>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => { setAutoLocation(null); setFormData(prev => ({ ...prev, location: '' })); }}
-                    className="text-xs font-bold text-indigo-600 hover:text-indigo-800 ml-2"
-                  >
-                    İPTAL
+
+            {/* Seçili Konum Kartı */}
+            <div className="flex items-center justify-between bg-gradient-to-r from-indigo-50/70 to-purple-50/70 dark:from-indigo-900/20 dark:to-purple-900/20 border border-indigo-200/60 dark:border-indigo-500/20 rounded-2xl px-4 py-3 shadow-sm">
+              <div className="flex items-center space-x-3 overflow-hidden">
+                <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                  <MapPin className="w-4 h-4" />
+                </div>
+                <div className="flex flex-col truncate">
+                  <span className="text-[10px] font-bold text-indigo-500 dark:text-indigo-400 uppercase tracking-wider">Seçili Şehir / İlçe</span>
+                  <span className="text-sm font-bold text-text-primary truncate">{selectedCityLabel}</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-50 dark:bg-emerald-950/40 px-2 py-1 rounded-lg">
+                <Check className="w-3.5 h-3.5" />
+                <span>Hazır</span>
+              </div>
+            </div>
+
+            {/* Hızlı Şehir Hapları */}
+            <div className="space-y-1.5">
+              <p className="text-[10px] text-text-secondary font-medium">Hızlı Şehir Seçimi:</p>
+              <div className="flex flex-wrap gap-1.5">
+                {POPULAR_CITIES.map(c => {
+                  const isSelected = selectedCityLabel === c.label || selectedCityLabel === c.name;
+                  return (
+                    <button
+                      key={c.label}
+                      type="button"
+                      onClick={() => handleSelectLocation(c)}
+                      className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg border transition-all ${
+                        isSelected
+                          ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm shadow-indigo-600/20'
+                          : 'bg-primary border-border-color text-text-secondary hover:text-text-primary hover:border-indigo-300'
+                      }`}
+                    >
+                      {c.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Arama Girişi */}
+            <div className="relative">
+              <div className="flex items-center gap-2 bg-primary border border-border-color rounded-xl px-3.5 py-2.5 text-sm focus-within:ring-2 focus-within:ring-indigo-400/30">
+                <Search className="w-4 h-4 text-text-secondary shrink-0" />
+                <input
+                  type="text"
+                  placeholder="İl veya ilçe ara (örn: Kadıköy, Çankaya, Konak)..."
+                  value={locationSearch}
+                  onChange={e => setLocationSearch(e.target.value)}
+                  className="w-full bg-transparent text-xs text-text-primary placeholder-text-secondary/60 focus:outline-none"
+                />
+                {locationSearch && (
+                  <button type="button" onClick={() => setLocationSearch('')} className="p-0.5 text-text-secondary hover:text-text-primary">
+                    <X className="w-3.5 h-3.5" />
                   </button>
+                )}
+              </div>
+
+              {/* Arama Sonuçları Dropdown */}
+              <AnimatePresence>
+                {showLocationSearchDropdown && locationSearchResults.length > 0 && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -4 }}
+                    className="absolute top-full left-0 right-0 mt-1.5 bg-secondary border border-border-color rounded-xl shadow-xl z-50 overflow-hidden max-h-52 overflow-y-auto"
+                  >
+                    {locationSearchResults.map((item, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => handleSelectLocation(item)}
+                        className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-primary text-left border-b border-border-color/30 last:border-0 transition-colors"
+                      >
+                        <div className="flex items-center gap-2">
+                          <MapPin className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                          <span className="text-xs font-semibold text-text-primary">{item.label}</span>
+                        </div>
+                        <span className="text-[10px] text-text-secondary bg-primary px-1.5 py-0.5 rounded">{item.province}</span>
+                      </button>
+                    ))}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
+            {/* İl ve İlçe Açılır Listeleri (Klasik Seçim) */}
+            <div className="space-y-1.5">
+              <p className="text-[10px] text-text-secondary font-medium">Veya Listeden Seç:</p>
+              <div className="flex space-x-2">
+                <div className="relative flex-1">
+                  <select
+                    className="w-full appearance-none bg-primary border border-border-color rounded-xl px-3.5 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/10 text-text-primary transition-colors cursor-pointer pr-8"
+                    value={selectedProvince}
+                    onChange={(e) => handleProvinceSelect(e.target.value)}
+                  >
+                    {provinces.map(prov => (
+                      <option key={prov.id} value={prov.name}>{prov.name}</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="w-3.5 h-3.5 text-text-secondary absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                 </div>
-              ) : (
-                <div className="flex space-x-2">
-                  <div className="relative flex-1">
-                    <select
-                      required={!autoLocation}
-                      className="w-full appearance-none bg-primary border border-border-color rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/10 text-text-primary transition-colors"
-                      value={selectedProvince}
-                      onChange={(e) => { setSelectedProvince(e.target.value); setSelectedDistrict(''); }}
-                    >
-                      <option value="">İl Seçiniz</option>
-                      {provinces.map(prov => <option key={prov.id} value={prov.name}>{prov.name}</option>)}
-                    </select>
-                  </div>
-                  <div className="relative flex-1">
-                    <select
-                      required={!autoLocation && selectedProvince !== '' && districts.length > 0}
-                      disabled={!selectedProvince || districts.length === 0}
-                      className="w-full appearance-none bg-primary border border-border-color rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/10 disabled:opacity-50 text-text-primary transition-colors"
-                      value={selectedDistrict}
-                      onChange={(e) => setSelectedDistrict(e.target.value)}
-                    >
-                      <option value="">İlçe Seçiniz</option>
-                      {districts.map(dist => <option key={dist.id} value={dist.name}>{dist.name}</option>)}
-                    </select>
-                  </div>
+                <div className="relative flex-1">
+                  <select
+                    disabled={districts.length === 0}
+                    className="w-full appearance-none bg-primary border border-border-color rounded-xl px-3.5 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/10 disabled:opacity-50 text-text-primary transition-colors cursor-pointer pr-8"
+                    value={selectedDistrict}
+                    onChange={(e) => handleDistrictSelect(e.target.value)}
+                  >
+                    {districts.map(dist => (
+                      <option key={dist} value={dist}>{dist}</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="w-3.5 h-3.5 text-text-secondary absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                 </div>
-              )}
+              </div>
+            </div>
 
               <div className="relative">
                 <select
                   required
-                  className="w-full appearance-none bg-primary border border-border-color rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/10 text-text-primary transition-colors"
+                  className="w-full appearance-none bg-primary border border-border-color rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/10 text-text-primary transition-colors cursor-pointer"
                   value={formData.event}
                   onChange={(e) => setFormData({ ...formData, event: e.target.value })}
                 >
-                  <option value="">Etkinlik Tipi</option>
+                  <option value="">Etkinlik Tipi Seçiniz</option>
                   {events.map(ev => <option key={ev} value={ev}>{ev}</option>)}
                 </select>
               </div>
             </div>
-          </div>
 
           {/* ─── Detaylı Filtre ───────────────────────────────────────────── */}
           <div className="pt-4 border-t border-border-color">
