@@ -1,4 +1,7 @@
-export type Category = 'top' | 'bottom' | 'outerwear' | 'shoes' | 'makeup' | 'accessory';
+import type { WardrobeItemDTO, StylistRequest as SharedStylistRequest, ContextSummary } from '../shared/api';
+import type { Category as SharedCategory } from '../shared/wardrobe';
+
+export type Category = SharedCategory;
 
 export interface User {
   id: string;
@@ -6,33 +9,25 @@ export interface User {
   username: string;
   name: string;
   isPrivate?: boolean;
-  createdAt: string;
+  createdAt?: string;
 }
 
-export interface WardrobeItem {
-  id: string;
-  userId?: string; // Belongs to a user
-  name: string;
+/** Sunucunun döndürdüğü parça (yeni alanlar eski kayıtlarda boş olabilir). */
+export interface WardrobeItem extends Omit<WardrobeItemDTO, 'category' | 'material' | 'attributes'> {
   category: Category;
-  subCategory: string;
-  color: string;
   material?: string;
-  style: string;
-  pattern?: string; // e.g., düz, çizgili, kareli, çiçekli
-  fit?: string;     // e.g., dar, normal, bol, oversize
-  weatherMatch: string[];
-  imagePath: string;
   attributes: Record<string, any>;
-  aiAnalyzed?: boolean;
 }
 
 export interface SavedOutfit {
   id: string;
-  userId?: string; // Belongs to a user
+  userId?: string;
   name: string;
-  items: string[]; // List of item IDs
+  items: string[]; // Parça kimlikleri
   stylingReason: string;
   compatibilityScore: number;
+  source?: 'ai' | 'manual' | 'daily' | 'trip';
+  context?: ContextSummary | null;
   createdAt: string;
 }
 
@@ -41,31 +36,22 @@ export interface WardrobeMetadata {
   outfits?: SavedOutfit[];
 }
 
-import type { LocationInput } from '../shared/api.js';
-
-export interface StylistRequest {
-  location?: string | LocationInput;
-  event: string;
-  effort?: number; // 1-10
-  mood?: string;
-  requiredItems?: string[]; // Must include item IDs
-  excludedItems?: string[]; // Must NOT include item IDs
-  ignoreWeather?: boolean;  // If true, don't consider weather match
-  personalContext?: string; // Global style identity from sidebar
-  styleTags?: string[];     // Selected style tags from planner
+export interface StylistRequest extends SharedStylistRequest {
   additionalFilters?: Record<string, any>;
-  recentOutfits?: string[][]; // Son 3 kombinin parça ID'leri (tekrar engelleme için)
 }
 
 // ─── Collab (Beraber Kombin) ────────────────────────────────────────────────
 
 export interface CollabResult {
   collabId: string;
-  myOutfit: string[];        // Initiator'ın item ID'leri
-  friendOutfit: string[];    // Arkadaşın item ID'leri
+  myOutfit: string[];        // Başlatanın parça kimlikleri
+  friendOutfit: string[];    // Arkadaşın parça kimlikleri
+  myItems?: WardrobeItem[];
+  friendItems?: WardrobeItem[];
   compatibilityScore: number;
   collabReason: string;      // AI açıklama metni
   styleHarmony: string;      // Kısa stil etiketi (ör: "Renk Bloklaması")
+  warnings?: string[];
 }
 
 export interface CollabSession {

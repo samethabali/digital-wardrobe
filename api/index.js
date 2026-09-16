@@ -1,16 +1,53 @@
 // server.ts
-import express from "express";
-import path from "path";
-import { fileURLToPath } from "url";
-import cors from "cors";
-import dotenv from "dotenv";
-import multer from "multer";
-import { CloudinaryStorage } from "multer-storage-cloudinary";
-import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
+import "dotenv/config";
 
 // backend/db.ts
 import mongoose from "mongoose";
+
+// backend/config.ts
+var ConfigError = class extends Error {
+  constructor(name, hint = "") {
+    super(`${name} ortam de\u011Fi\u015Fkeni tan\u0131ml\u0131 de\u011Fil${hint ? ` (${hint})` : ""}.`);
+    this.name = "ConfigError";
+  }
+};
+var MIN_JWT_SECRET_LENGTH = 32;
+function getJwtSecret() {
+  const secret = process.env.JWT_SECRET?.trim();
+  if (!secret || secret.length < MIN_JWT_SECRET_LENGTH) {
+    throw new ConfigError("JWT_SECRET", `en az ${MIN_JWT_SECRET_LENGTH} karakter olmal\u0131`);
+  }
+  return secret;
+}
+function getMongoUri() {
+  const uri = process.env.MONGODB_URI?.trim();
+  if (!uri) throw new ConfigError("MONGODB_URI");
+  return uri;
+}
+function getGeminiApiKey() {
+  const key = process.env.GEMINI_API_KEY?.trim();
+  if (!key) throw new ConfigError("GEMINI_API_KEY");
+  return key;
+}
+function getCloudinaryCredentials() {
+  const cloud_name = process.env.CLOUDINARY_CLOUD_NAME?.trim();
+  const api_key = process.env.CLOUDINARY_API_KEY?.trim();
+  const api_secret = process.env.CLOUDINARY_API_SECRET?.trim();
+  if (!cloud_name || !api_key || !api_secret) return null;
+  return { cloud_name, api_key, api_secret };
+}
+function getVapidConfig() {
+  const publicKey = process.env.VAPID_PUBLIC_KEY?.trim();
+  const privateKey = process.env.VAPID_PRIVATE_KEY?.trim();
+  if (!publicKey || !privateKey) return null;
+  return { publicKey, privateKey, subject: process.env.VAPID_SUBJECT?.trim() || "mailto:destek@aura.app" };
+}
+function getCronSecret() {
+  const secret = process.env.CRON_SECRET?.trim();
+  return secret && secret.length >= 16 ? secret : null;
+}
+
+// backend/db.ts
 var PersonalColorSchema = new mongoose.Schema({
   season: String,
   undertone: String,
@@ -167,6 +204,7 @@ var DailyPickSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true },
   date: { type: String, required: true },
   payload: mongoose.Schema.Types.Mixed,
+  pushedAt: Date,
   createdAt: { type: Date, default: Date.now, expires: 60 * 60 * 24 * 7 }
 });
 DailyPickSchema.index({ userId: 1, date: 1 }, { unique: true });
@@ -199,8 +237,7 @@ async function connectToDatabase() {
   if (cachedConnection && mongoose.connection.readyState === 1) {
     return cachedConnection;
   }
-  const FALLBACK_MONGODB_URI = "mongodb+srv://smthbl_db_user:I0cqcx1HGGNEuo4y@cluster0.4ixj9s3.mongodb.net/?appName=Cluster0";
-  const uri = process.env.MONGODB_URI || FALLBACK_MONGODB_URI;
+  const uri = getMongoUri();
   cachedConnection = await mongoose.connect(uri);
   console.log("[MongoDB] Yeni ba\u011Flant\u0131 ba\u015Far\u0131yla kuruldu.");
   if (onFirstConnect) {
@@ -218,13 +255,47 @@ async function deletePersonalizationData(userId) {
   ]);
 }
 
+// backend/app.ts
+import express5 from "express";
+import cors from "cors";
+import multer from "multer";
+import { CloudinaryStorage } from "multer-storage-cloudinary";
+
 // backend/cloudinary.ts
 import { v2 as cloudinary } from "cloudinary";
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || "dstqxvqqf",
-  api_key: process.env.CLOUDINARY_API_KEY || "385148218883752",
-  api_secret: process.env.CLOUDINARY_API_SECRET || "r1mRxhJ1RLHZ1TD3p4dATssa5RE"
-});
+var credentials = getCloudinaryCredentials();
+if (credentials) {
+  cloudinary.config(credentials);
+} else {
+  console.warn("[Cloudinary] CLOUDINARY_* ortam de\u011Fi\u015Fkenleri tan\u0131ml\u0131 de\u011Fil; g\xF6rsel y\xFCkleme ve silme \xE7al\u0131\u015Fmaz.");
+}
+var CLOUDINARY_DELETE_BATCH = 100;
+var defaultDeleter = (publicIds) => cloudinary.api.delete_resources(publicIds);
+var imageDeleter = defaultDeleter;
+async function deleteImages(publicIds) {
+  const unique = Array.from(new Set(publicIds.filter(Boolean)));
+  const failed = [];
+  let deleted = 0;
+  for (let i = 0; i < unique.length; i += CLOUDINARY_DELETE_BATCH) {
+    const batch = unique.slice(i, i + CLOUDINARY_DELETE_BATCH);
+    try {
+      await imageDeleter(batch);
+      deleted += batch.length;
+    } catch (err) {
+      console.error("[Cloudinary] G\xF6rsel grubu silinemedi:", err);
+      failed.push(...batch);
+    }
+  }
+  return { deleted, failed };
+}
+var defaultUploader = async (dataUri, options) => {
+  const uploaded = await cloudinary.uploader.upload(dataUri, { ...options, overwrite: true, format: "png" });
+  return uploaded.secure_url;
+};
+var imageUploader = defaultUploader;
+function uploadPng(dataUri, options) {
+  return imageUploader(dataUri, options);
+}
 function getPublicIdFromUrl(url) {
   try {
     const parts = url.split("/upload/");
@@ -256,12 +327,22 @@ function getOwnedPublicId(url, userId) {
   return publicId && publicId.startsWith(`digital_wardrobe/${userId}/`) ? publicId : null;
 }
 function isOwnCloudinaryUrl(url) {
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME?.trim();
+  if (!cloudName) return false;
   try {
     const parsed = new URL(url);
-    return (parsed.protocol === "https:" || parsed.protocol === "http:") && parsed.hostname === "res.cloudinary.com" && parsed.pathname.startsWith(`/${process.env.CLOUDINARY_CLOUD_NAME}/`);
+    return (parsed.protocol === "https:" || parsed.protocol === "http:") && parsed.hostname === "res.cloudinary.com" && parsed.pathname.startsWith(`/${cloudName}/`);
   } catch {
     return false;
   }
+}
+function withTransformation(url, transformation) {
+  const [prefix, rest] = url.split("/upload/");
+  if (!rest) return url;
+  const segments = rest.split("/");
+  const firstIsTransform = segments[0] && !/^v\d+$/.test(segments[0]) && segments[0].includes("_") && !segments[0].startsWith("digital_wardrobe");
+  const remaining = firstIsTransform ? segments.slice(1) : segments;
+  return `${prefix}/upload/${transformation}/${remaining.join("/")}`;
 }
 var imageFetcher = (url) => fetch(url, { signal: AbortSignal.timeout(1e4) });
 async function downloadOwnImage(url) {
@@ -279,240 +360,6 @@ async function downloadOwnImage(url) {
     return null;
   }
 }
-
-// backend/engine/generate.ts
-import crypto3 from "crypto";
-
-// shared/wardrobe.ts
-var UNKNOWN = "belirsiz";
-var CATEGORIES = ["top", "bottom", "onepiece", "outerwear", "shoes", "accessory", "makeup"];
-var CATEGORY_LABELS = {
-  all: "T\xFCm\xFC",
-  top: "\xDCst",
-  bottom: "Alt",
-  onepiece: "Tek Par\xE7a",
-  outerwear: "D\u0131\u015F Giyim",
-  shoes: "Ayakkab\u0131",
-  accessory: "Aksesuar",
-  makeup: "Makyaj"
-};
-var STYLES = ["casual", "smart-casual", "formal", "elegant", "classic", "sport", "streetwear", "bohemian"];
-var STYLE_LABELS = {
-  casual: "G\xFCnl\xFCk",
-  "smart-casual": "Smart Casual",
-  formal: "Resmi",
-  elegant: "Zarif",
-  classic: "Klasik",
-  sport: "Spor",
-  streetwear: "Sokak",
-  bohemian: "Bohem"
-};
-var COLOR_FAMILIES = [
-  "siyah",
-  "beyaz",
-  "gri",
-  "lacivert",
-  "mavi",
-  "kahverengi",
-  "bej",
-  "haki",
-  "ye\u015Fil",
-  "k\u0131rm\u0131z\u0131",
-  "bordo",
-  "pembe",
-  "mor",
-  "sar\u0131",
-  "turuncu",
-  "\xE7ok renkli"
-];
-var NEUTRAL_COLOR_FAMILIES = ["siyah", "beyaz", "gri", "lacivert", "kahverengi", "bej", "haki"];
-var COLOR_FAMILY_HEX = {
-  siyah: "#111827",
-  beyaz: "#F9FAFB",
-  gri: "#9CA3AF",
-  lacivert: "#1E3A8A",
-  mavi: "#3B82F6",
-  kahverengi: "#78350F",
-  bej: "#E7D8C0",
-  haki: "#6B705C",
-  ye\u015Fil: "#16A34A",
-  k\u0131rm\u0131z\u0131: "#DC2626",
-  bordo: "#7F1D1D",
-  pembe: "#EC4899",
-  mor: "#7C3AED",
-  sar\u0131: "#EAB308",
-  turuncu: "#EA580C",
-  "\xE7ok renkli": "#A855F7"
-};
-var PATTERNS = ["d\xFCz", "\xE7izgili", "kareli", "\xE7i\xE7ekli", "grafik", "noktal\u0131", "hayvan", "kamuflaj", "batik", UNKNOWN];
-var PATTERN_LABELS = {
-  d\u00FCz: "D\xFCz",
-  \u00E7izgili: "\xC7izgili",
-  kareli: "Kareli",
-  \u00E7i\u00E7ekli: "\xC7i\xE7ekli",
-  grafik: "Grafik / Bask\u0131",
-  noktal\u0131: "Noktal\u0131",
-  hayvan: "Hayvan Deseni",
-  kamuflaj: "Kamuflaj",
-  batik: "Batik / Tie-dye",
-  [UNKNOWN]: "Belirsiz"
-};
-var FITS = ["dar", "normal", "bol", "oversize", "crop", UNKNOWN];
-var FIT_LABELS = {
-  dar: "Dar / Slim",
-  normal: "Normal / Regular",
-  bol: "Bol / Loose",
-  oversize: "Oversize",
-  crop: "Crop",
-  [UNKNOWN]: "Belirsiz"
-};
-var LAYER_ROLES = ["base", "mid", "outer", "none"];
-var SEASONS = ["ilkbahar", "yaz", "sonbahar", "k\u0131\u015F"];
-var EVENTS = ["G\xFCndelik", "Ofis", "\u0130\u015F G\xF6r\xFC\u015Fmesi", "Randevu", "Parti", "D\xFC\u011F\xFCn/Davet", "Spor", "Seyahat", "Okul"];
-var MOODS = ["Enerjik", "Minimalist", "Romantik", "Ciddi", "Rahat"];
-var STYLE_TAG_GROUPS = [
-  {
-    label: "Renk Uyumu",
-    tags: ["Monokromatik", "Tamamlay\u0131c\u0131", "Kontrast", "Pastel", "N\xF6tr Tonlar"]
-  },
-  {
-    label: "Stil Karakteri",
-    tags: ["Minimalist", "Maximalist", "Klasik", "Vintage", "Streetwear", "Preppy", "Boho", "Dark Academia", "Y2K", "Sporty", "Business Casual", "Romantic"]
-  },
-  {
-    label: "Kesim & Katman",
-    tags: ["Katmanl\u0131", "Oversize", "Fitted", "Crop & High-waist"]
-  }
-];
-var STYLE_TAGS = STYLE_TAG_GROUPS.flatMap((g) => g.tags);
-var GARMENT_CATEGORIES = ["top", "bottom", "onepiece", "outerwear"];
-var isEmpty = (value) => value === void 0 || value === null || value === "";
-function missingFields(item) {
-  const missing = [];
-  const category = item.category || "";
-  if (isEmpty(item.subCategory)) missing.push("subCategory");
-  if (isEmpty(item.colorFamily)) missing.push("colorFamily");
-  if (isEmpty(item.style)) missing.push("style");
-  if (category !== "makeup") {
-    if (isEmpty(item.formality)) missing.push("formality");
-    if (category !== "accessory" && isEmpty(item.warmth)) missing.push("warmth");
-  }
-  if (GARMENT_CATEGORIES.includes(category)) {
-    if (isEmpty(item.material)) missing.push("material");
-    if (isEmpty(item.pattern)) missing.push("pattern");
-    if (isEmpty(item.fit)) missing.push("fit");
-    if (isEmpty(item.layerRole)) missing.push("layerRole");
-  }
-  if ((category === "outerwear" || category === "shoes") && (item.waterResistant === void 0 || item.waterResistant === null)) {
-    missing.push("waterResistant");
-  }
-  if (!["makeup", "accessory"].includes(category) && !(item.seasons && item.seasons.length)) {
-    missing.push("seasons");
-  }
-  return missing;
-}
-function deriveWeatherMatch(item) {
-  const tags = /* @__PURE__ */ new Set();
-  const warmth = item.warmth ?? 3;
-  if (warmth <= 2) {
-    tags.add("sunny");
-    tags.add("hot");
-  }
-  if (warmth === 3) {
-    tags.add("sunny");
-    tags.add("cloudy");
-  }
-  if (warmth >= 4) {
-    tags.add("cloudy");
-    tags.add("cold");
-  }
-  if (warmth >= 5) tags.add("snowy");
-  if (item.waterResistant) tags.add("rainy");
-  return Array.from(tags);
-}
-function normalizeTr(text2) {
-  return (text2 || "").toLocaleLowerCase("tr-TR").trim();
-}
-var COLOR_NAME_HINTS = [
-  ["\xE7ok renkli", "\xE7ok renkli"],
-  ["renkli", "\xE7ok renkli"],
-  ["multi", "\xE7ok renkli"],
-  ["lacivert", "lacivert"],
-  ["indigo", "lacivert"],
-  ["navy", "lacivert"],
-  ["bordo", "bordo"],
-  ["\u015Farap", "bordo"],
-  ["vi\u015Fne", "bordo"],
-  ["haki", "haki"],
-  ["zeytin", "haki"],
-  ["asker", "haki"],
-  ["antrasit", "gri"],
-  ["f\xFCme", "gri"],
-  ["g\xFCm\xFC\u015F", "gri"],
-  ["gri", "gri"],
-  ["siyah", "siyah"],
-  ["black", "siyah"],
-  ["beyaz", "beyaz"],
-  ["white", "beyaz"],
-  ["ekru", "bej"],
-  ["krem", "bej"],
-  ["ta\u015F", "bej"],
-  ["bej", "bej"],
-  ["camel", "kahverengi"],
-  ["taba", "kahverengi"],
-  ["kahve", "kahverengi"],
-  ["vizon", "kahverengi"],
-  ["brown", "kahverengi"],
-  ["pudra", "pembe"],
-  ["fu\u015Fya", "pembe"],
-  ["somon", "pembe"],
-  ["pembe", "pembe"],
-  ["pink", "pembe"],
-  ["lila", "mor"],
-  ["lavanta", "mor"],
-  ["mor", "mor"],
-  ["purple", "mor"],
-  ["hardal", "sar\u0131"],
-  ["alt\u0131n", "sar\u0131"],
-  ["sar\u0131", "sar\u0131"],
-  ["yellow", "sar\u0131"],
-  ["kiremit", "turuncu"],
-  ["turuncu", "turuncu"],
-  ["orange", "turuncu"],
-  ["k\u0131rm\u0131z\u0131", "k\u0131rm\u0131z\u0131"],
-  ["red", "k\u0131rm\u0131z\u0131"],
-  ["mint", "ye\u015Fil"],
-  ["z\xFCmr\xFCt", "ye\u015Fil"],
-  ["ye\u015Fil", "ye\u015Fil"],
-  ["green", "ye\u015Fil"],
-  ["kot", "mavi"],
-  ["denim", "mavi"],
-  ["turkuaz", "mavi"],
-  ["mavi", "mavi"],
-  ["blue", "mavi"]
-];
-function colorFamilyFromName(name) {
-  const normalized = normalizeTr(name);
-  if (!normalized) return null;
-  for (const [hint, family] of COLOR_NAME_HINTS) {
-    if (normalized.includes(hint)) return family;
-  }
-  return null;
-}
-function isValidHex(value) {
-  return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
-}
-function seasonForDate(date) {
-  const month = date.getMonth() + 1;
-  if (month >= 3 && month <= 5) return "ilkbahar";
-  if (month >= 6 && month <= 8) return "yaz";
-  if (month >= 9 && month <= 11) return "sonbahar";
-  return "k\u0131\u015F";
-}
-
-// backend/ai/gemini.ts
-import { GoogleGenAI } from "@google/genai";
-import crypto from "crypto";
 
 // backend/ai/models.ts
 import { ThinkingLevel } from "@google/genai";
@@ -578,7 +425,16 @@ var DEFAULT_TOTAL_BUDGET_MS = {
   segmentation: 45e3
 };
 
+// backend/routes/auth.ts
+import express from "express";
+import bcrypt from "bcryptjs";
+
+// backend/http.ts
+import jwt from "jsonwebtoken";
+
 // backend/ai/gemini.ts
+import { GoogleGenAI } from "@google/genai";
+import crypto from "crypto";
 var AiError = class extends Error {
   constructor(code, message) {
     super(message);
@@ -588,7 +444,12 @@ var AiError = class extends Error {
 var client = null;
 function getClient() {
   if (!client) {
-    const apiKey = process.env.GEMINI_API_KEY || "AIzaSyCD0LspfgsLR7GKEBeUIt8vgTBM14jd9pY";
+    let apiKey;
+    try {
+      apiKey = getGeminiApiKey();
+    } catch (err) {
+      throw new AiError("config", "Yapay zeka servisi yap\u0131land\u0131r\u0131lmam\u0131\u015F.");
+    }
     const genai = new GoogleGenAI({ apiKey });
     client = {
       generateContent: (params) => genai.models.generateContent(params),
@@ -717,6 +578,690 @@ function cosine(a, b) {
 function embeddingCacheKey(text2) {
   return crypto.createHash("sha1").update(`${EMBEDDING_MODEL}:${EMBEDDING_DIMENSIONS}:${text2}`).digest("hex");
 }
+
+// backend/http.ts
+function signToken(user) {
+  const payload = {
+    id: user._id.toString(),
+    email: user.email,
+    username: user.username || "",
+    name: user.name,
+    isPrivate: user.isPrivate || false
+  };
+  return jwt.sign(payload, getJwtSecret(), { expiresIn: "30d", algorithm: "HS256" });
+}
+function publicUser(user) {
+  return {
+    id: user._id.toString(),
+    email: user.email,
+    username: user.username || "",
+    name: user.name,
+    isPrivate: user.isPrivate || false
+  };
+}
+function sendConfigError(res, err) {
+  if (!(err instanceof ConfigError)) return false;
+  console.error("[Config]", err.message);
+  res.status(503).json({ error: "Sunucu yap\u0131land\u0131rmas\u0131 eksik. L\xFCtfen daha sonra tekrar deneyin." });
+  return true;
+}
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers["authorization"];
+  const token = typeof authHeader === "string" ? authHeader.split(" ")[1] : void 0;
+  if (!token) {
+    return res.status(401).json({ error: "Eri\u015Fim engellendi. Token eksik." });
+  }
+  let secret;
+  try {
+    secret = getJwtSecret();
+  } catch (err) {
+    sendConfigError(res, err);
+    return;
+  }
+  jwt.verify(token, secret, { algorithms: ["HS256"] }, (err, user) => {
+    if (err || !user?.id) {
+      return res.status(403).json({ error: "Ge\xE7ersiz veya s\xFCresi dolmu\u015F token." });
+    }
+    req.user = user;
+    next();
+  });
+}
+var MINUTE = 60 * 1e3;
+var HOUR = 60 * MINUTE;
+var RATE_LIMITS = {
+  register: { max: 10, windowMs: HOUR },
+  // IP başına
+  login: { max: 10, windowMs: 15 * MINUTE },
+  // IP + e-posta başına
+  generateOutfit: { max: 60, windowMs: HOUR },
+  // Kullanıcı başına (aşağıdakilerin hepsi)
+  analyzeImage: { max: 60, windowMs: HOUR },
+  upload: { max: 60, windowMs: HOUR },
+  capsuleAnalysis: { max: 20, windowMs: HOUR },
+  collabGenerate: { max: 20, windowMs: HOUR },
+  enrich: { max: 5, windowMs: HOUR },
+  feedback: { max: 300, windowMs: HOUR },
+  wearLog: { max: 120, windowMs: HOUR },
+  pairings: { max: 60, windowMs: HOUR },
+  dailyPick: { max: 30, windowMs: HOUR },
+  tripPlan: { max: 20, windowMs: HOUR },
+  cutout: { max: 20, windowMs: HOUR },
+  embeddings: { max: 10, windowMs: HOUR },
+  personalColor: { max: 5, windowMs: HOUR },
+  push: { max: 20, windowMs: HOUR }
+};
+function getClientIp(req) {
+  const realIp = req.headers["x-real-ip"];
+  if (process.env.VERCEL && typeof realIp === "string" && realIp) return realIp;
+  return req.socket.remoteAddress || "unknown";
+}
+async function incrementRateCounter(key, expiresAt) {
+  const update = { $inc: { count: 1 }, $setOnInsert: { expiresAt } };
+  const options = { upsert: true, returnDocument: "after" };
+  try {
+    return await RateLimitModel.findOneAndUpdate({ key }, update, options);
+  } catch (err) {
+    if (err?.code === 11e3) return await RateLimitModel.findOneAndUpdate({ key }, update, options);
+    throw err;
+  }
+}
+function rateLimit(bucket, limit, getIdentity) {
+  return async (req, res, next) => {
+    const windowStart = Math.floor(Date.now() / limit.windowMs) * limit.windowMs;
+    const windowEnd = windowStart + limit.windowMs;
+    try {
+      const counter = await incrementRateCounter(`${bucket}:${getIdentity(req)}:${windowStart}`, new Date(windowEnd));
+      if (counter.count > limit.max) {
+        const retryAfterSec = Math.ceil((windowEnd - Date.now()) / 1e3);
+        res.setHeader("Retry-After", String(retryAfterSec));
+        return res.status(429).json({ error: `\xC7ok fazla istek g\xF6nderdin. L\xFCtfen ${Math.ceil(retryAfterSec / 60)} dakika sonra tekrar dene.` });
+      }
+      next();
+    } catch (err) {
+      console.error(`[RateLimit] ${bucket} sayac\u0131 g\xFCncellenemedi:`, err);
+      res.status(503).json({ error: "\u0130stek \u015Fu an i\u015Flenemiyor. L\xFCtfen biraz sonra tekrar dene." });
+    }
+  };
+}
+var byUser = (req) => req.user.id;
+var byIp = (req) => getClientIp(req);
+var byIpAndEmail = (req) => `${getClientIp(req)}:${String(req.body?.email || "").trim().toLowerCase()}`;
+var AI_ERROR_STATUS = {
+  bad_request: 400,
+  blocked: 422,
+  invalid_output: 502,
+  timeout: 504,
+  unavailable: 503,
+  config: 503
+};
+function sendError(res, err, fallback, logTag) {
+  if (sendConfigError(res, err)) return;
+  if (err instanceof AiError) {
+    console.error(`[${logTag}] AI hatas\u0131 (${err.code}):`, err.message);
+    const message = err.code === "config" ? "Yapay zeka servisi \u015Fu an kullan\u0131lam\u0131yor." : err.message;
+    res.status(AI_ERROR_STATUS[err.code] || 502).json({ error: message });
+    return;
+  }
+  const status = typeof err?.status === "number" && err.status >= 400 && err.status < 500 ? err.status : null;
+  if (status) {
+    res.status(status).json({ error: err.message || fallback });
+    return;
+  }
+  console.error(`[${logTag}] Hata:`, err);
+  res.status(500).json({ error: fallback });
+}
+
+// shared/wardrobe.ts
+var UNKNOWN = "belirsiz";
+var CATEGORIES = ["top", "bottom", "onepiece", "outerwear", "shoes", "accessory", "makeup"];
+var CATEGORY_LABELS = {
+  all: "T\xFCm\xFC",
+  top: "\xDCst",
+  bottom: "Alt",
+  onepiece: "Tek Par\xE7a",
+  outerwear: "D\u0131\u015F Giyim",
+  shoes: "Ayakkab\u0131",
+  accessory: "Aksesuar",
+  makeup: "Makyaj"
+};
+var STYLES = ["casual", "smart-casual", "formal", "elegant", "classic", "sport", "streetwear", "bohemian"];
+var STYLE_LABELS = {
+  casual: "G\xFCnl\xFCk",
+  "smart-casual": "Smart Casual",
+  formal: "Resmi",
+  elegant: "Zarif",
+  classic: "Klasik",
+  sport: "Spor",
+  streetwear: "Sokak",
+  bohemian: "Bohem"
+};
+var COLOR_FAMILIES = [
+  "siyah",
+  "beyaz",
+  "gri",
+  "lacivert",
+  "mavi",
+  "kahverengi",
+  "bej",
+  "haki",
+  "ye\u015Fil",
+  "k\u0131rm\u0131z\u0131",
+  "bordo",
+  "pembe",
+  "mor",
+  "sar\u0131",
+  "turuncu",
+  "\xE7ok renkli"
+];
+var NEUTRAL_COLOR_FAMILIES = ["siyah", "beyaz", "gri", "lacivert", "kahverengi", "bej", "haki"];
+var COLOR_FAMILY_HEX = {
+  siyah: "#111827",
+  beyaz: "#F9FAFB",
+  gri: "#9CA3AF",
+  lacivert: "#1E3A8A",
+  mavi: "#3B82F6",
+  kahverengi: "#78350F",
+  bej: "#E7D8C0",
+  haki: "#6B705C",
+  ye\u015Fil: "#16A34A",
+  k\u0131rm\u0131z\u0131: "#DC2626",
+  bordo: "#7F1D1D",
+  pembe: "#EC4899",
+  mor: "#7C3AED",
+  sar\u0131: "#EAB308",
+  turuncu: "#EA580C",
+  "\xE7ok renkli": "#A855F7"
+};
+var PATTERNS = ["d\xFCz", "\xE7izgili", "kareli", "\xE7i\xE7ekli", "grafik", "noktal\u0131", "hayvan", "kamuflaj", "batik", UNKNOWN];
+var PATTERN_LABELS = {
+  d\u00FCz: "D\xFCz",
+  \u00E7izgili: "\xC7izgili",
+  kareli: "Kareli",
+  \u00E7i\u00E7ekli: "\xC7i\xE7ekli",
+  grafik: "Grafik / Bask\u0131",
+  noktal\u0131: "Noktal\u0131",
+  hayvan: "Hayvan Deseni",
+  kamuflaj: "Kamuflaj",
+  batik: "Batik / Tie-dye",
+  [UNKNOWN]: "Belirsiz"
+};
+var FITS = ["dar", "normal", "bol", "oversize", "crop", UNKNOWN];
+var FIT_LABELS = {
+  dar: "Dar / Slim",
+  normal: "Normal / Regular",
+  bol: "Bol / Loose",
+  oversize: "Oversize",
+  crop: "Crop",
+  [UNKNOWN]: "Belirsiz"
+};
+var LAYER_ROLES = ["base", "mid", "outer", "none"];
+var SEASONS = ["ilkbahar", "yaz", "sonbahar", "k\u0131\u015F"];
+var WEATHERS = ["sunny", "cloudy", "rainy", "snowy", "hot", "cold"];
+var WARMTH_LABELS = {
+  1: "\xC7ok ince",
+  2: "\u0130nce",
+  3: "Orta",
+  4: "Kal\u0131n",
+  5: "\xC7ok kal\u0131n"
+};
+var FORMALITY_LABELS = {
+  1: "Spor / \xE7ok rahat",
+  2: "G\xFCnl\xFCk",
+  3: "Smart casual",
+  4: "\u015E\u0131k / i\u015F",
+  5: "Resmi / gece"
+};
+var EVENTS = ["G\xFCndelik", "Ofis", "\u0130\u015F G\xF6r\xFC\u015Fmesi", "Randevu", "Parti", "D\xFC\u011F\xFCn/Davet", "Spor", "Seyahat", "Okul"];
+var MOODS = ["Enerjik", "Minimalist", "Romantik", "Ciddi", "Rahat"];
+var STYLE_TAG_GROUPS = [
+  {
+    label: "Renk Uyumu",
+    tags: ["Monokromatik", "Tamamlay\u0131c\u0131", "Kontrast", "Pastel", "N\xF6tr Tonlar"]
+  },
+  {
+    label: "Stil Karakteri",
+    tags: ["Minimalist", "Maximalist", "Klasik", "Vintage", "Streetwear", "Preppy", "Boho", "Dark Academia", "Y2K", "Sporty", "Business Casual", "Romantic"]
+  },
+  {
+    label: "Kesim & Katman",
+    tags: ["Katmanl\u0131", "Oversize", "Fitted", "Crop & High-waist"]
+  }
+];
+var STYLE_TAGS = STYLE_TAG_GROUPS.flatMap((g) => g.tags);
+var FEEDBACK_REASONS = [
+  { value: "renk", label: "Renkler uymad\u0131" },
+  { value: "tarz", label: "Tarz\u0131ma uygun de\u011Fil" },
+  { value: "resmiyet", label: "Etkinli\u011Fe uygun de\u011Fil" },
+  { value: "hava", label: "Havaya uygun de\u011Fil" },
+  { value: "kesim", label: "Kesim / oran ho\u015Fuma gitmedi" },
+  { value: "diger", label: "Di\u011Fer" }
+];
+var GARMENT_CATEGORIES = ["top", "bottom", "onepiece", "outerwear"];
+var isEmpty = (value) => value === void 0 || value === null || value === "";
+function missingFields(item) {
+  const missing = [];
+  const category = item.category || "";
+  if (isEmpty(item.subCategory)) missing.push("subCategory");
+  if (isEmpty(item.colorFamily)) missing.push("colorFamily");
+  if (isEmpty(item.style)) missing.push("style");
+  if (category !== "makeup") {
+    if (isEmpty(item.formality)) missing.push("formality");
+    if (category !== "accessory" && isEmpty(item.warmth)) missing.push("warmth");
+  }
+  if (GARMENT_CATEGORIES.includes(category)) {
+    if (isEmpty(item.material)) missing.push("material");
+    if (isEmpty(item.pattern)) missing.push("pattern");
+    if (isEmpty(item.fit)) missing.push("fit");
+    if (isEmpty(item.layerRole)) missing.push("layerRole");
+  }
+  if ((category === "outerwear" || category === "shoes") && (item.waterResistant === void 0 || item.waterResistant === null)) {
+    missing.push("waterResistant");
+  }
+  if (!["makeup", "accessory"].includes(category) && !(item.seasons && item.seasons.length)) {
+    missing.push("seasons");
+  }
+  return missing;
+}
+function deriveWeatherMatch(item) {
+  const tags = /* @__PURE__ */ new Set();
+  const warmth = item.warmth ?? 3;
+  if (warmth <= 2) {
+    tags.add("sunny");
+    tags.add("hot");
+  }
+  if (warmth === 3) {
+    tags.add("sunny");
+    tags.add("cloudy");
+  }
+  if (warmth >= 4) {
+    tags.add("cloudy");
+    tags.add("cold");
+  }
+  if (warmth >= 5) tags.add("snowy");
+  if (item.waterResistant) tags.add("rainy");
+  return Array.from(tags);
+}
+function normalizeTr(text2) {
+  return (text2 || "").toLocaleLowerCase("tr-TR").trim();
+}
+var COLOR_NAME_HINTS = [
+  ["\xE7ok renkli", "\xE7ok renkli"],
+  ["renkli", "\xE7ok renkli"],
+  ["multi", "\xE7ok renkli"],
+  ["lacivert", "lacivert"],
+  ["indigo", "lacivert"],
+  ["navy", "lacivert"],
+  ["bordo", "bordo"],
+  ["\u015Farap", "bordo"],
+  ["vi\u015Fne", "bordo"],
+  ["haki", "haki"],
+  ["zeytin", "haki"],
+  ["asker", "haki"],
+  ["antrasit", "gri"],
+  ["f\xFCme", "gri"],
+  ["g\xFCm\xFC\u015F", "gri"],
+  ["gri", "gri"],
+  ["siyah", "siyah"],
+  ["black", "siyah"],
+  ["beyaz", "beyaz"],
+  ["white", "beyaz"],
+  ["ekru", "bej"],
+  ["krem", "bej"],
+  ["ta\u015F", "bej"],
+  ["bej", "bej"],
+  ["camel", "kahverengi"],
+  ["taba", "kahverengi"],
+  ["kahve", "kahverengi"],
+  ["vizon", "kahverengi"],
+  ["brown", "kahverengi"],
+  ["pudra", "pembe"],
+  ["fu\u015Fya", "pembe"],
+  ["somon", "pembe"],
+  ["pembe", "pembe"],
+  ["pink", "pembe"],
+  ["lila", "mor"],
+  ["lavanta", "mor"],
+  ["mor", "mor"],
+  ["purple", "mor"],
+  ["hardal", "sar\u0131"],
+  ["alt\u0131n", "sar\u0131"],
+  ["sar\u0131", "sar\u0131"],
+  ["yellow", "sar\u0131"],
+  ["kiremit", "turuncu"],
+  ["turuncu", "turuncu"],
+  ["orange", "turuncu"],
+  ["k\u0131rm\u0131z\u0131", "k\u0131rm\u0131z\u0131"],
+  ["red", "k\u0131rm\u0131z\u0131"],
+  ["mint", "ye\u015Fil"],
+  ["z\xFCmr\xFCt", "ye\u015Fil"],
+  ["ye\u015Fil", "ye\u015Fil"],
+  ["green", "ye\u015Fil"],
+  ["kot", "mavi"],
+  ["denim", "mavi"],
+  ["turkuaz", "mavi"],
+  ["mavi", "mavi"],
+  ["blue", "mavi"]
+];
+function colorFamilyFromName(name) {
+  const normalized = normalizeTr(name);
+  if (!normalized) return null;
+  for (const [hint, family] of COLOR_NAME_HINTS) {
+    if (normalized.includes(hint)) return family;
+  }
+  return null;
+}
+function isValidHex(value) {
+  return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
+}
+function seasonForDate(date) {
+  const month = date.getMonth() + 1;
+  if (month >= 3 && month <= 5) return "ilkbahar";
+  if (month >= 6 && month <= 8) return "yaz";
+  if (month >= 9 && month <= 11) return "sonbahar";
+  return "k\u0131\u015F";
+}
+
+// backend/time.ts
+var APP_TIME_ZONE = "Europe/Istanbul";
+function localDate(date = /* @__PURE__ */ new Date(), timeZone = APP_TIME_ZONE) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+}
+function localDateTime(date = /* @__PURE__ */ new Date(), timeZone = APP_TIME_ZONE) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).formatToParts(date);
+  const get = (type) => parts.find((p) => p.type === type)?.value || "00";
+  const hour = get("hour") === "24" ? "00" : get("hour");
+  return `${get("year")}-${get("month")}-${get("day")}T${hour}:${get("minute")}`;
+}
+function daysBetween(a, b) {
+  const toUtc = (s) => Date.UTC(Number(s.slice(0, 4)), Number(s.slice(5, 7)) - 1, Number(s.slice(8, 10)));
+  return Math.round((toUtc(b) - toUtc(a)) / 864e5);
+}
+function addDays(date, days) {
+  const d = new Date(Date.UTC(Number(date.slice(0, 4)), Number(date.slice(5, 7)) - 1, Number(date.slice(8, 10))));
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+function isValidLocalDate(value) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
+}
+function isValidLocalDateTime(value) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}:00Z`));
+}
+
+// backend/engine/request.ts
+var RequestError = class extends Error {
+  constructor(message, status = 400) {
+    super(message);
+    this.status = status;
+  }
+};
+var str = (value, max) => typeof value === "string" ? value.trim().slice(0, max) : void 0;
+var idList = (value, maxItems = 50) => Array.isArray(value) ? value.filter((v) => typeof v === "string" && v.length <= 100).slice(0, maxItems) : [];
+function sanitizeLocation(value) {
+  if (typeof value === "string") {
+    const query = value.trim().slice(0, 100);
+    return query ? { type: "text", query } : void 0;
+  }
+  if (!value || typeof value !== "object") return void 0;
+  const v = value;
+  if (v.type === "coords" && typeof v.lat === "number" && typeof v.lon === "number" && Number.isFinite(v.lat) && Number.isFinite(v.lon)) {
+    if (Math.abs(v.lat) > 90 || Math.abs(v.lon) > 180) return void 0;
+    return { type: "coords", lat: v.lat, lon: v.lon, label: str(v.label, 80) };
+  }
+  if (v.type === "place" && typeof v.province === "string" && v.province.trim()) {
+    return { type: "place", province: v.province.trim().slice(0, 60), district: str(v.district, 60) || void 0 };
+  }
+  if (v.type === "text" && typeof v.query === "string" && v.query.trim()) {
+    return { type: "text", query: v.query.trim().slice(0, 100) };
+  }
+  return void 0;
+}
+function sanitizeStylistRequest(raw) {
+  if (!raw || typeof raw !== "object") throw new RequestError("Kombin iste\u011Fi eksik.");
+  const r = raw;
+  let dateTime;
+  if (r.dateTime !== void 0 && r.dateTime !== null && r.dateTime !== "") {
+    if (!isValidLocalDateTime(r.dateTime)) throw new RequestError("Tarih ve saat bi\xE7imi ge\xE7ersiz.");
+    const now = localDateTime();
+    const max = localDateTime(new Date(Date.now() + 15 * 864e5));
+    if (r.dateTime.slice(0, 10) < now.slice(0, 10)) throw new RequestError("Ge\xE7mi\u015F bir tarih i\xE7in kombin planlanamaz.");
+    if (r.dateTime > max) throw new RequestError("En fazla 15 g\xFCn sonras\u0131 i\xE7in planlama yap\u0131labilir.");
+    dateTime = r.dateTime.slice(0, 13) <= now.slice(0, 13) ? void 0 : r.dateTime;
+  }
+  const num2 = (value) => typeof value === "number" && Number.isFinite(value) ? value : void 0;
+  const mood = str(r.mood, 30);
+  return {
+    location: sanitizeLocation(r.location),
+    dateTime,
+    event: str(r.event, 60) || "G\xFCndelik",
+    eventText: str(r.eventText, 300) || void 0,
+    dressiness: num2(r.dressiness),
+    activity: num2(r.activity),
+    effort: num2(r.effort),
+    mood: mood && MOODS.includes(mood) ? mood : void 0,
+    styleTags: Array.isArray(r.styleTags) ? r.styleTags.filter((t) => typeof t === "string" && STYLE_TAGS.includes(t)).slice(0, 10) : [],
+    personalContext: str(r.personalContext, 1e3) || void 0,
+    ignoreWeather: r.ignoreWeather === true,
+    requiredItems: idList(r.requiredItems),
+    lockedItems: idList(r.lockedItems),
+    excludedItems: idList(r.excludedItems, 100),
+    recentOutfits: Array.isArray(r.recentOutfits) ? r.recentOutfits.filter(Array.isArray).slice(0, 10).map((o) => idList(o, 10)) : []
+  };
+}
+
+// shared/privacy.ts
+var NOTICE_VERSION = "2026-09-16";
+var CONSENT_KEYS = ["personalization", "personalColor", "push"];
+
+// backend/account.ts
+function toConsentsDTO(user) {
+  const c = user?.consents || {};
+  return {
+    personalization: c.personalization?.granted === true,
+    personalColor: c.personalColor?.granted === true,
+    push: c.push?.granted === true,
+    noticeVersion: c.noticeVersion || null,
+    updatedAt: c.updatedAt ? new Date(c.updatedAt).toISOString() : null
+  };
+}
+function parseConsentChange(body) {
+  const changes = {};
+  for (const key of CONSENT_KEYS) {
+    const value = body?.[key];
+    if (value === void 0) continue;
+    if (typeof value !== "boolean") throw new RequestError(`Ge\xE7ersiz r\u0131za de\u011Feri: ${key}`);
+    changes[key] = value;
+  }
+  if (Object.keys(changes).length === 0) throw new RequestError("De\u011Fi\u015Ftirilecek bir r\u0131za g\xF6nderilmedi.");
+  const granting = Object.values(changes).some(Boolean);
+  const noticeVersion = typeof body?.noticeVersion === "string" ? body.noticeVersion : void 0;
+  if (granting && noticeVersion !== NOTICE_VERSION) {
+    throw new RequestError("R\u0131za vermeden \xF6nce g\xFCncel ayd\u0131nlatma metnini onaylamal\u0131s\u0131n.", 409);
+  }
+  return { changes, noticeVersion };
+}
+async function applyConsentChange(userId, change) {
+  const now = /* @__PURE__ */ new Date();
+  const set = { "consents.updatedAt": now };
+  for (const [key, granted] of Object.entries(change.changes)) {
+    set[`consents.${key}`] = { granted, at: now };
+  }
+  if (change.noticeVersion === NOTICE_VERSION && Object.values(change.changes).some(Boolean)) {
+    set["consents.noticeVersion"] = NOTICE_VERSION;
+  }
+  const unset = {};
+  if (change.changes.personalColor === false) unset["styleProfile.personalColor"] = "";
+  const user = await UserModel.findOneAndUpdate(
+    { _id: userId },
+    { $set: set, ...Object.keys(unset).length ? { $unset: unset } : {} },
+    { returnDocument: "after" }
+  );
+  if (!user) throw new RequestError("Kullan\u0131c\u0131 bulunamad\u0131.", 404);
+  const cleanups = [];
+  if (change.changes.personalization === false) cleanups.push(deletePersonalizationData(userId));
+  if (change.changes.push === false) cleanups.push(PushSubscriptionModel.deleteMany({ userId }));
+  await Promise.all(cleanups);
+  return toConsentsDTO(user);
+}
+async function deleteUserAccount(userId) {
+  const items = await ItemModel.find({ userId }).select("imagePath cutoutImagePath").lean();
+  const publicIds = items.flatMap((item) => [
+    getOwnedPublicId(item.imagePath, userId),
+    getOwnedPublicId(item.cutoutImagePath, userId)
+  ]).filter(Boolean);
+  const images = await deleteImages(publicIds);
+  if (images.failed.length > 0) {
+    console.error(`[Account Delete] ${images.failed.length} g\xF6rsel silinemedi:`, images.failed.slice(0, 20));
+  }
+  await Promise.all([
+    ItemModel.deleteMany({ userId }),
+    OutfitModel.deleteMany({ userId }),
+    WearLogModel.deleteMany({ userId }),
+    CollabSessionModel.deleteMany({ $or: [{ initiatorId: userId }, { friendId: userId }] }),
+    PushSubscriptionModel.deleteMany({ userId }),
+    deletePersonalizationData(userId)
+  ]);
+  await UserModel.deleteOne({ _id: userId });
+  return { imagesDeleted: images.deleted, imagesFailed: images.failed.length };
+}
+
+// backend/routes/auth.ts
+function authRoutes() {
+  const router = express.Router();
+  router.post("/api/auth/register", rateLimit("register", RATE_LIMITS.register, byIp), async (req, res) => {
+    try {
+      let { email, password, name, username } = req.body || {};
+      if (!email || !password || !name || !username) {
+        return res.status(400).json({ error: "L\xFCtfen t\xFCm alanlar\u0131 doldurun." });
+      }
+      email = String(email).trim().toLowerCase();
+      password = String(password).trim();
+      name = String(name).trim().slice(0, 100);
+      const cleanUsername = String(username).trim().toLowerCase().replace(/\s+/g, "").slice(0, 40);
+      if (!email || !password || !name || !cleanUsername) {
+        return res.status(400).json({ error: "L\xFCtfen t\xFCm alanlar\u0131 ge\xE7erli de\u011Ferlerle doldurun." });
+      }
+      if (cleanUsername.length < 3) {
+        return res.status(400).json({ error: "Kullan\u0131c\u0131 ad\u0131 en az 3 karakter olmal\u0131d\u0131r." });
+      }
+      if (password.length < 6) {
+        return res.status(400).json({ error: "\u015Eifre en az 6 karakter olmal\u0131d\u0131r." });
+      }
+      if (await UserModel.findOne({ email })) {
+        return res.status(400).json({ error: "Bu e-posta adresi zaten kullan\u0131mda." });
+      }
+      if (await UserModel.findOne({ username: cleanUsername })) {
+        return res.status(400).json({ error: "Bu kullan\u0131c\u0131 ad\u0131 zaten al\u0131nm\u0131\u015F." });
+      }
+      const passwordHash = await bcrypt.hash(password, 10);
+      const newUser = new UserModel({ email, username: cleanUsername, passwordHash, name, createdAt: /* @__PURE__ */ new Date() });
+      await newUser.save();
+      res.json({ success: true, token: signToken(newUser), user: publicUser(newUser) });
+    } catch (err) {
+      sendError(res, err, "Kay\u0131t i\u015Flemi ba\u015Far\u0131s\u0131z oldu.", "Register");
+    }
+  });
+  router.post("/api/auth/login", rateLimit("login", RATE_LIMITS.login, byIpAndEmail), async (req, res) => {
+    try {
+      let { email, password } = req.body || {};
+      if (!email || !password) {
+        return res.status(400).json({ error: "E-posta ve \u015Fifre gereklidir." });
+      }
+      email = String(email).trim().toLowerCase();
+      password = String(password).trim();
+      if (!email || !password) {
+        return res.status(400).json({ error: "E-posta ve \u015Fifre bo\u015F b\u0131rak\u0131lamaz." });
+      }
+      const user = await UserModel.findOne({ email });
+      if (!user || !await bcrypt.compare(password, user.passwordHash)) {
+        return res.status(401).json({ error: "Hatal\u0131 e-posta veya \u015Fifre." });
+      }
+      res.json({ success: true, token: signToken(user), user: publicUser(user) });
+    } catch (err) {
+      sendError(res, err, "Giri\u015F i\u015Flemi ba\u015Far\u0131s\u0131z oldu.", "Login");
+    }
+  });
+  router.get("/api/auth/me", authenticateToken, async (req, res) => {
+    try {
+      const user = await UserModel.findOne({ _id: req.user.id });
+      if (!user) return res.status(404).json({ error: "Kullan\u0131c\u0131 bulunamad\u0131." });
+      res.json({ user: publicUser(user), consents: toConsentsDTO(user), noticeVersion: NOTICE_VERSION });
+    } catch (err) {
+      sendError(res, err, "Sunucu hatas\u0131.", "Me");
+    }
+  });
+  router.put("/api/auth/profile", authenticateToken, async (req, res) => {
+    try {
+      const { email, username, name, password, isPrivate } = req.body || {};
+      const user = await UserModel.findOne({ _id: req.user.id });
+      if (!user) return res.status(404).json({ error: "Kullan\u0131c\u0131 bulunamad\u0131." });
+      if (typeof email === "string" && email.trim() && email.trim().toLowerCase() !== user.email) {
+        const cleanEmail = email.trim().toLowerCase();
+        if (await UserModel.findOne({ email: cleanEmail })) return res.status(400).json({ error: "Bu e-posta zaten kullan\u0131mda." });
+        user.email = cleanEmail;
+      }
+      if (typeof username === "string" && username.trim() && username.trim().toLowerCase() !== user.username) {
+        const cleanUsername = username.trim().toLowerCase().replace(/\s+/g, "").slice(0, 40);
+        if (cleanUsername.length < 3) return res.status(400).json({ error: "Kullan\u0131c\u0131 ad\u0131 en az 3 karakter olmal\u0131d\u0131r." });
+        if (await UserModel.findOne({ username: cleanUsername })) return res.status(400).json({ error: "Bu kullan\u0131c\u0131 ad\u0131 zaten al\u0131nm\u0131\u015F." });
+        user.username = cleanUsername;
+      }
+      if (typeof name === "string" && name.trim()) user.name = name.trim().slice(0, 100);
+      if (password) {
+        if (typeof password !== "string" || password.length < 6) return res.status(400).json({ error: "\u015Eifre en az 6 karakter olmal\u0131d\u0131r." });
+        user.passwordHash = await bcrypt.hash(password, 10);
+      }
+      if (typeof isPrivate === "boolean") user.isPrivate = isPrivate;
+      await user.save();
+      res.json({ success: true, token: signToken(user), user: publicUser(user) });
+    } catch (err) {
+      sendError(res, err, "Profil g\xFCncellenemedi.", "Profile Update");
+    }
+  });
+  router.delete("/api/auth/profile", authenticateToken, async (req, res) => {
+    try {
+      const result = await deleteUserAccount(req.user.id);
+      console.log(`[Account Delete] Hesap ve t\xFCm veriler silindi (${result.imagesDeleted} g\xF6rsel, ${result.imagesFailed} silinemedi).`);
+      res.json({ success: true, message: "Hesab\u0131n\u0131z ve t\xFCm verileriniz ba\u015Far\u0131yla silindi." });
+    } catch (err) {
+      sendError(res, err, "Hesap silme i\u015Flemi ba\u015Far\u0131s\u0131z oldu.", "Account Delete");
+    }
+  });
+  router.get("/api/auth/consents", authenticateToken, async (req, res) => {
+    try {
+      const user = await UserModel.findOne({ _id: req.user.id });
+      if (!user) return res.status(404).json({ error: "Kullan\u0131c\u0131 bulunamad\u0131." });
+      res.json({ consents: toConsentsDTO(user), noticeVersion: NOTICE_VERSION });
+    } catch (err) {
+      sendError(res, err, "R\u0131za ayarlar\u0131 al\u0131namad\u0131.", "Consents");
+    }
+  });
+  const updateConsents = async (req, res) => {
+    try {
+      const consents = await applyConsentChange(req.user.id, parseConsentChange(req.body));
+      res.json({ success: true, consents, noticeVersion: NOTICE_VERSION });
+    } catch (err) {
+      sendError(res, err, "R\u0131za ayarlar\u0131 kaydedilemedi.", "Consents");
+    }
+  };
+  router.put("/api/auth/consents", authenticateToken, rateLimit("consents", RATE_LIMITS.push, byUser), updateConsents);
+  router.post("/api/auth/consents", authenticateToken, rateLimit("consents", RATE_LIMITS.push, byUser), updateConsents);
+  return router;
+}
+
+// backend/routes/social.ts
+import express2 from "express";
+
+// backend/engine/generate.ts
+import crypto3 from "crypto";
 
 // shared/turkeyLocations.ts
 var TURKISH_PROVINCES = [
@@ -2400,13 +2945,15 @@ function searchTurkishLocations(query, limit = 8) {
         if (!seen.has(key)) {
           seen.add(key);
           const coordKey = `${dNorm}-${pNorm}`;
-          const coords = KNOWN_DISTRICT_COORDS[coordKey] || { lat: prov.lat, lon: prov.lon };
+          const known = KNOWN_DISTRICT_COORDS[coordKey];
+          const coords = known || { lat: prov.lat, lon: prov.lon };
           results.push({
             label: key,
             province: prov.name,
             district: dist,
             lat: coords.lat,
-            lon: coords.lon
+            lon: coords.lon,
+            ...known ? {} : { approximate: true }
           });
           if (results.length >= limit) return results;
         }
@@ -2431,7 +2978,10 @@ function resolveTurkishLocation(query) {
     return {
       latitude: matches[0].lat,
       longitude: matches[0].lon,
-      label: matches[0].label
+      label: matches[0].label,
+      province: matches[0].province,
+      district: matches[0].district,
+      approximate: Boolean(matches[0].approximate)
     };
   }
   return null;
@@ -2472,7 +3022,6 @@ var RAIN_CODES = /* @__PURE__ */ new Set([51, 53, 55, 56, 57, 61, 63, 65, 66, 67
 var SNOW_CODES = /* @__PURE__ */ new Set([71, 73, 75, 77, 85, 86]);
 var WeatherError = class extends Error {
 };
-var isCustomFetcher = false;
 var fetcher = (url) => fetch(url, { signal: AbortSignal.timeout(8e3) });
 var geocodeCache = /* @__PURE__ */ new Map();
 async function geocode(name) {
@@ -2488,6 +3037,15 @@ async function geocode(name) {
   geocodeCache.set(normKey, { expires: Date.now() + 24 * 60 * 60 * 1e3, data: results });
   return results;
 }
+async function refineLocal(local) {
+  const approximate = { latitude: local.latitude, longitude: local.longitude, label: local.label };
+  if (!local.approximate || !local.district) return approximate;
+  try {
+    return await findDistrict(local.province, local.district) || approximate;
+  } catch {
+    return approximate;
+  }
+}
 async function resolveLocation(input) {
   if (!input) return null;
   const location = typeof input === "string" ? { type: "text", query: input } : input;
@@ -2500,32 +3058,26 @@ async function resolveLocation(input) {
     const province = (location.province || "").trim();
     const district = (location.district || "").trim();
     if (!province) return null;
-    if (!isCustomFetcher) {
-      const placeQuery = district ? `${district}, ${province}` : province;
-      const local = resolveTurkishLocation(placeQuery) || (district ? resolveTurkishLocation(district) : null) || resolveTurkishLocation(province);
-      if (local) return local;
-    }
+    const local2 = (district ? resolveTurkishLocation(`${district}, ${province}`) : null) || resolveTurkishLocation(province);
+    const localMatchesRequest = local2 && normalizeTr(local2.province) === normalizeTr(province) && (!district || normalizeTr(local2.district) === normalizeTr(district));
+    if (local2 && localMatchesRequest) return refineLocal(local2);
     if (district) {
       const found = await findDistrict(province, district);
       if (found) return found;
     }
-    return findProvince(province);
+    return await findProvince(province) || (local2 && normalizeTr(local2.province) === normalizeTr(province) ? { latitude: local2.latitude, longitude: local2.longitude, label: local2.label } : null);
   }
   const query = (location.query || "").trim();
   if (query.length < 2) return null;
-  if (!isCustomFetcher) {
-    const localMatch = resolveTurkishLocation(query);
-    if (localMatch) return localMatch;
-  }
   const parts = query.split(",").map((p) => p.trim()).filter(Boolean);
   if (parts.length >= 2) {
     const [first, second] = parts;
-    if (!isCustomFetcher) {
-      const localCombo = resolveTurkishLocation(`${first}, ${second}`) || resolveTurkishLocation(`${second}, ${first}`) || resolveTurkishLocation(first) || resolveTurkishLocation(second);
-      if (localCombo) return localCombo;
-    }
+    const local2 = resolveTurkishLocation(`${first}, ${second}`) || resolveTurkishLocation(`${second}, ${first}`);
+    if (local2?.district) return refineLocal(local2);
     return await findDistrict(second, first) || await findDistrict(first, second) || await findProvince(second) || await findProvince(first);
   }
+  const local = resolveTurkishLocation(query);
+  if (local) return refineLocal(local);
   const results = await geocode(query);
   return results[0] ? toResolved(results[0], query) : null;
 }
@@ -2614,6 +3166,46 @@ async function getWeather(location, dateTime) {
     condition: WMO_CODES[code] || "Bilinmeyen hava durumu",
     windKmh: wind
   };
+}
+async function getDailyForecast(location, dates) {
+  const data = await fetchForecast(location.latitude, location.longitude);
+  const daily = data?.daily || {};
+  const times = daily.time || [];
+  const result = {};
+  for (const date of dates) {
+    const i = times.indexOf(date);
+    if (i === -1) {
+      result[date] = null;
+      continue;
+    }
+    const max = num(daily.temperature_2m_max?.[i]);
+    const min = num(daily.temperature_2m_min?.[i]);
+    const feelsMax = num(daily.apparent_temperature_max?.[i]);
+    const feelsMin = num(daily.apparent_temperature_min?.[i]);
+    const code = num(daily.weather_code?.[i]);
+    if (max === null || min === null || code === null) {
+      result[date] = null;
+      continue;
+    }
+    const representative = min + (max - min) * 0.6;
+    const feels = feelsMax !== null && feelsMin !== null ? feelsMin + (feelsMax - feelsMin) * 0.6 : representative;
+    result[date] = {
+      locationLabel: location.label,
+      latitude: location.latitude,
+      longitude: location.longitude,
+      time: `${date}T12:00`,
+      isForecast: true,
+      temperatureC: Math.round(representative * 10) / 10,
+      feelsLikeC: Math.round(feels * 10) / 10,
+      minC: min,
+      maxC: max,
+      precipitationProbability: num(daily.precipitation_probability_max?.[i]),
+      weatherCode: code,
+      condition: WMO_CODES[code] || "Bilinmeyen hava durumu",
+      windKmh: null
+    };
+  }
+  return result;
 }
 
 // backend/knowledge/rules.ts
@@ -3928,19 +4520,19 @@ function ruleEmbeddingText(rule) {
 }
 
 // backend/knowledge/embeddingStore.ts
-async function getTextEmbedding(text2, label) {
+async function getTextEmbedding(text2, label, timeoutMs) {
   const trimmed = text2.trim().slice(0, 2e3);
   if (!trimmed) return null;
   const key = embeddingCacheKey(trimmed);
   const cached = await EmbeddingCacheModel.findOne({ key }).lean();
   if (cached?.vector?.length) return cached.vector;
-  const vector = await embed({ text: trimmed }, label);
+  const vector = await embed({ text: trimmed }, label, timeoutMs);
   if (vector) {
     await EmbeddingCacheModel.updateOne({ key }, { $set: { key, vector } }, { upsert: true }).catch(() => void 0);
   }
   return vector;
 }
-async function loadRuleEmbeddings(computeMissing = 2, rules = KNOWLEDGE_RULES) {
+async function loadRuleEmbeddings(computeMissing = 0, rules = KNOWLEDGE_RULES) {
   const keys = rules.map((rule) => ({ rule, key: embeddingCacheKey(ruleEmbeddingText(rule)) }));
   const docs = await EmbeddingCacheModel.find({ key: { $in: keys.map((k) => k.key) } }).lean();
   const byKey = new Map(docs.map((d) => [d.key, d.vector]));
@@ -3958,32 +4550,10 @@ async function loadRuleEmbeddings(computeMissing = 2, rules = KNOWLEDGE_RULES) {
   }
   return result;
 }
-
-// backend/time.ts
-var APP_TIME_ZONE = "Europe/Istanbul";
-function localDate(date = /* @__PURE__ */ new Date(), timeZone = APP_TIME_ZONE) {
-  return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
-}
-function localDateTime(date = /* @__PURE__ */ new Date(), timeZone = APP_TIME_ZONE) {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false
-  }).formatToParts(date);
-  const get = (type) => parts.find((p) => p.type === type)?.value || "00";
-  const hour = get("hour") === "24" ? "00" : get("hour");
-  return `${get("year")}-${get("month")}-${get("day")}T${hour}:${get("minute")}`;
-}
-function daysBetween(a, b) {
-  const toUtc = (s) => Date.UTC(Number(s.slice(0, 4)), Number(s.slice(5, 7)) - 1, Number(s.slice(8, 10)));
-  return Math.round((toUtc(b) - toUtc(a)) / 864e5);
-}
-function isValidLocalDateTime(value) {
-  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}:00Z`));
+async function warmRuleEmbeddings(limit = 40, rules = KNOWLEDGE_RULES) {
+  const before = await loadRuleEmbeddings(0, rules);
+  const after = await loadRuleEmbeddings(limit, rules);
+  return { computed: after.size - before.size, missing: rules.length - after.size };
 }
 
 // backend/preferences.ts
@@ -3992,6 +4562,19 @@ function hasConsent(user, key) {
 }
 var EMPTY_AFFINITIES = () => ({ item: {}, colorFamily: {}, style: {}, fit: {}, pattern: {} });
 var HALF_LIFE_DAYS = 60;
+var MAX_ABS = 20;
+var MAX_ITEM_KEYS = 500;
+var EVENT_WEIGHTS = {
+  saved: 2,
+  worn: 3,
+  liked: 2,
+  disliked: -3,
+  rerolled: -0.3
+};
+function bump(map, key, delta) {
+  if (!key || key === "belirsiz") return;
+  map[key] = Math.max(-MAX_ABS, Math.min(MAX_ABS, (map[key] || 0) + delta));
+}
 function applyDecay(aff, days) {
   if (days <= 0) return aff;
   const factor = Math.pow(0.5, days / HALF_LIFE_DAYS);
@@ -4010,6 +4593,47 @@ function applyDecay(aff, days) {
     fit: decayMap(aff.fit),
     pattern: decayMap(aff.pattern)
   };
+}
+function updateAffinities(current, event, items) {
+  const aff = {
+    item: { ...current.item },
+    colorFamily: { ...current.colorFamily },
+    style: { ...current.style },
+    fit: { ...current.fit },
+    pattern: { ...current.pattern }
+  };
+  if (event.type === "replaced" && event.itemId) {
+    const item = items.get(event.itemId);
+    bump(aff.item, event.itemId, -1.5);
+    if (item) {
+      bump(aff.colorFamily, item.colorFamily, -0.5);
+      bump(aff.style, item.style, -0.5);
+      bump(aff.fit, item.fit, -0.3);
+      bump(aff.pattern, item.pattern, -0.3);
+    }
+  } else if (event.type in EVENT_WEIGHTS) {
+    let weight = EVENT_WEIGHTS[event.type];
+    if (event.type === "disliked" && (event.reason === "hava" || event.reason === "resmiyet")) weight = -1;
+    for (const id of event.itemIds) {
+      const item = items.get(id);
+      bump(aff.item, id, weight);
+      if (!item) continue;
+      bump(aff.colorFamily, item.colorFamily, weight * 0.5);
+      bump(aff.style, item.style, weight * 0.5);
+      bump(aff.fit, item.fit, weight * 0.3);
+      bump(aff.pattern, item.pattern, weight * 0.3);
+      if (event.type === "disliked") {
+        if (event.reason === "renk") bump(aff.colorFamily, item.colorFamily, -1.5);
+        if (event.reason === "kesim") bump(aff.fit, item.fit, -1.5);
+        if (event.reason === "tarz") bump(aff.style, item.style, -1.5);
+      }
+    }
+  }
+  const itemEntries = Object.entries(aff.item);
+  if (itemEntries.length > MAX_ITEM_KEYS) {
+    aff.item = Object.fromEntries(itemEntries.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, MAX_ITEM_KEYS));
+  }
+  return aff;
 }
 async function loadPreferenceData(user) {
   const style = user?.styleProfile || {};
@@ -4035,6 +4659,66 @@ async function preferenceSummary(user) {
   if (!hasConsent(user, "personalization")) return null;
   const profile = await PreferenceProfileModel.findOne({ userId: user._id }).select("summary").lean();
   return profile?.summary || null;
+}
+var SUMMARY_EVERY = 15;
+function topEntries(map, sign, limit = 3) {
+  return Object.entries(map || {}).filter(([, v]) => v * sign > 1).sort((a, b) => (b[1] - a[1]) * sign).slice(0, limit).map(([k]) => k);
+}
+async function refreshSummary(profile) {
+  const aff = profile.affinities;
+  const facts = {
+    sevilenRenkler: topEntries(aff.colorFamily, 1),
+    sevilmeyenRenkler: topEntries(aff.colorFamily, -1),
+    sevilenStiller: topEntries(aff.style, 1),
+    sevilmeyenStiller: topEntries(aff.style, -1),
+    sevilenKesimler: topEntries(aff.fit, 1),
+    sevilmeyenKesimler: topEntries(aff.fit, -1),
+    sevilenDesenler: topEntries(aff.pattern, 1),
+    sevilmeyenDesenler: topEntries(aff.pattern, -1)
+  };
+  const { data } = await generateJson({
+    task: "light",
+    label: "preference_summary",
+    contents: `Kullan\u0131c\u0131n\u0131n kombin geri bildirimlerinden \xE7\u0131kar\u0131lan e\u011Filimler:
+${JSON.stringify(facts)}
+
+Bu e\u011Filimleri bir stilistin not defterine yazaca\u011F\u0131 gibi, 2 k\u0131sa T\xFCrk\xE7e c\xFCmleyle \xF6zetle. Veride olmayan bir \u015Fey ekleme.`,
+    schema: { type: "object", properties: { summary: { type: "string" } }, required: ["summary"] }
+  });
+  profile.summary = String(data.summary || "").slice(0, 300);
+  profile.summaryEventCount = profile.eventCount;
+  profile.summaryUpdatedAt = /* @__PURE__ */ new Date();
+}
+async function recordFeedback(user, event) {
+  if (!hasConsent(user, "personalization")) return { stored: false };
+  const ids = Array.from(/* @__PURE__ */ new Set([...event.itemIds || [], ...event.itemId ? [event.itemId] : []]));
+  const ownedItems = await ItemModel.find({ userId: user._id, id: { $in: ids } }).select("id colorFamily style fit pattern").lean();
+  const items = new Map(ownedItems.map((i) => [i.id, i]));
+  const itemIds = (event.itemIds || []).filter((id) => items.has(id));
+  const itemId = event.itemId && items.has(event.itemId) ? event.itemId : void 0;
+  await FeedbackEventModel.create({
+    userId: user._id,
+    type: event.type,
+    generationId: event.generationId,
+    itemIds,
+    itemId,
+    reason: event.reason,
+    note: event.note?.slice(0, 300),
+    context: event.context
+  });
+  let profile = await PreferenceProfileModel.findOne({ userId: user._id });
+  if (!profile) profile = new PreferenceProfileModel({ userId: user._id, affinities: EMPTY_AFFINITIES() });
+  const days = profile.updatedAt ? (Date.now() - new Date(profile.updatedAt).getTime()) / 864e5 : 0;
+  const current = applyDecay({ ...EMPTY_AFFINITIES(), ...profile.affinities?.toObject?.() || profile.affinities || {} }, days);
+  profile.affinities = updateAffinities(current, { ...event, itemIds, itemId }, items);
+  profile.markModified("affinities");
+  profile.eventCount = (profile.eventCount || 0) + 1;
+  profile.updatedAt = /* @__PURE__ */ new Date();
+  if (profile.eventCount - (profile.summaryEventCount || 0) >= SUMMARY_EVERY) {
+    await refreshSummary(profile).catch((err) => console.warn("[Preferences] \xD6zet \xFCretilemedi:", err?.message));
+  }
+  await profile.save();
+  return { stored: true };
 }
 async function logShownOutfits(user, generationId, outfits, context) {
   if (!hasConsent(user, "personalization") || outfits.length === 0) return;
@@ -4369,7 +5053,9 @@ function summarizeContext(ctx) {
     precipitation: ctx.precipitation,
     outerwear: ctx.outerwear,
     needsWaterResistant: ctx.needsWaterResistant,
-    season: ctx.season
+    season: ctx.season,
+    feelsLikeC: ctx.weather ? ctx.weather.feelsLikeC : null,
+    indoor: ctx.indoor
   };
 }
 var TEMP_BAND_LABELS = {
@@ -5414,68 +6100,8 @@ async function loadReranker() {
   return (features) => features.length === model.featureCount ? predict(model, features) : 0.5;
 }
 
-// backend/engine/request.ts
-var RequestError = class extends Error {
-  constructor(message, status = 400) {
-    super(message);
-    this.status = status;
-  }
-};
-var str = (value, max) => typeof value === "string" ? value.trim().slice(0, max) : void 0;
-var idList = (value, maxItems = 50) => Array.isArray(value) ? value.filter((v) => typeof v === "string" && v.length <= 100).slice(0, maxItems) : [];
-function sanitizeLocation(value) {
-  if (typeof value === "string") {
-    const query = value.trim().slice(0, 100);
-    return query ? { type: "text", query } : void 0;
-  }
-  if (!value || typeof value !== "object") return void 0;
-  const v = value;
-  if (v.type === "coords" && typeof v.lat === "number" && typeof v.lon === "number" && Number.isFinite(v.lat) && Number.isFinite(v.lon)) {
-    if (Math.abs(v.lat) > 90 || Math.abs(v.lon) > 180) return void 0;
-    return { type: "coords", lat: v.lat, lon: v.lon, label: str(v.label, 80) };
-  }
-  if (v.type === "place" && typeof v.province === "string" && v.province.trim()) {
-    return { type: "place", province: v.province.trim().slice(0, 60), district: str(v.district, 60) || void 0 };
-  }
-  if (v.type === "text" && typeof v.query === "string" && v.query.trim()) {
-    return { type: "text", query: v.query.trim().slice(0, 100) };
-  }
-  return void 0;
-}
-function sanitizeStylistRequest(raw) {
-  if (!raw || typeof raw !== "object") throw new RequestError("Kombin iste\u011Fi eksik.");
-  const r = raw;
-  let dateTime;
-  if (r.dateTime !== void 0 && r.dateTime !== null && r.dateTime !== "") {
-    if (!isValidLocalDateTime(r.dateTime)) throw new RequestError("Tarih ve saat bi\xE7imi ge\xE7ersiz.");
-    const now = localDateTime();
-    const max = localDateTime(new Date(Date.now() + 15 * 864e5));
-    if (r.dateTime.slice(0, 10) < now.slice(0, 10)) throw new RequestError("Ge\xE7mi\u015F bir tarih i\xE7in kombin planlanamaz.");
-    if (r.dateTime > max) throw new RequestError("En fazla 15 g\xFCn sonras\u0131 i\xE7in planlama yap\u0131labilir.");
-    dateTime = r.dateTime.slice(0, 13) <= now.slice(0, 13) ? void 0 : r.dateTime;
-  }
-  const num2 = (value) => typeof value === "number" && Number.isFinite(value) ? value : void 0;
-  const mood = str(r.mood, 30);
-  return {
-    location: sanitizeLocation(r.location),
-    dateTime,
-    event: str(r.event, 60) || "G\xFCndelik",
-    eventText: str(r.eventText, 300) || void 0,
-    dressiness: num2(r.dressiness),
-    activity: num2(r.activity),
-    effort: num2(r.effort),
-    mood: mood && MOODS.includes(mood) ? mood : void 0,
-    styleTags: Array.isArray(r.styleTags) ? r.styleTags.filter((t) => typeof t === "string" && STYLE_TAGS.includes(t)).slice(0, 10) : [],
-    personalContext: str(r.personalContext, 1e3) || void 0,
-    ignoreWeather: r.ignoreWeather === true,
-    requiredItems: idList(r.requiredItems),
-    lockedItems: idList(r.lockedItems),
-    excludedItems: idList(r.excludedItems, 100),
-    recentOutfits: Array.isArray(r.recentOutfits) ? r.recentOutfits.filter(Array.isArray).slice(0, 10).map((o) => idList(o, 10)) : []
-  };
-}
-
 // backend/engine/generate.ts
+var QUERY_EMBEDDING_TIMEOUT_MS = 4e3;
 async function parseEventText(event, eventText) {
   const { data } = await generateJson({
     task: "light",
@@ -5573,8 +6199,8 @@ async function runEngine(user, request, options, wardrobe) {
       warnings.push("Bir par\xE7a hem zorunlu hem hari\xE7 tutulmu\u015Ftu; zorunlu olarak kullan\u0131ld\u0131.");
     }
   }
-  const weather = await resolveWeather(user, request, Boolean(options.useLastLocation));
-  if (weather.resolved && request.location && request.location.type !== "text") {
+  const weather = options.weatherOverride ?? await resolveWeather(user, request, Boolean(options.useLastLocation));
+  if (!options.weatherOverride && !options.anonymous && weather.resolved && request.location && request.location.type !== "text") {
     await UserModel.updateOne({ _id: user._id }, {
       $set: { lastLocation: { latitude: weather.resolved.latitude, longitude: weather.resolved.longitude, label: weather.resolved.label, updatedAt: /* @__PURE__ */ new Date() } }
     }).catch(() => void 0);
@@ -5603,9 +6229,9 @@ async function runEngine(user, request, options, wardrobe) {
     date: request.dateTime ? new Date(request.dateTime) : void 0
   });
   const [prefs, recentShown, recentlyWorn, learned] = await Promise.all([
-    loadPreferenceData(user),
-    recentShownOutfits(user),
-    recentlyWornMap(user._id),
+    options.anonymous ? Promise.resolve(null) : loadPreferenceData(user),
+    options.anonymous ? Promise.resolve([]) : recentShownOutfits(user),
+    options.anonymous ? Promise.resolve(/* @__PURE__ */ new Map()) : recentlyWornMap(user._id),
     loadReranker()
   ]);
   const deps = {
@@ -5653,7 +6279,10 @@ async function generateOutfitsForUser(user, rawRequest, options) {
     const queryText = [ctx.personalContext, ctx.eventNotes].filter(Boolean).join("\n");
     if (queryText) {
       try {
-        [queryEmbedding, ruleEmbeddings] = await Promise.all([getTextEmbedding(queryText, "style_query"), loadRuleEmbeddings()]);
+        [queryEmbedding, ruleEmbeddings] = await Promise.all([
+          getTextEmbedding(queryText, "style_query", QUERY_EMBEDDING_TIMEOUT_MS),
+          loadRuleEmbeddings(0)
+        ]);
       } catch {
         queryEmbedding = null;
       }
@@ -5710,7 +6339,285 @@ async function generateOutfitsForUser(user, rawRequest, options) {
   };
 }
 
+// backend/engine/collab.ts
+var pairKey2 = (a, b) => [a, b].sort((x, y) => x.localeCompare(y, "tr")).join("|");
+var GOOD_ACCENT_PAIRS = /* @__PURE__ */ new Set([
+  pairKey2("mavi", "turuncu"),
+  pairKey2("mor", "sar\u0131"),
+  pairKey2("bordo", "ye\u015Fil"),
+  pairKey2("pembe", "ye\u015Fil"),
+  pairKey2("mavi", "pembe"),
+  pairKey2("bordo", "pembe"),
+  pairKey2("mavi", "sar\u0131"),
+  pairKey2("bordo", "k\u0131rm\u0131z\u0131")
+]);
+function dominant(outfit) {
+  const garments = outfit.items.filter((i) => ["top", "bottom", "onepiece", "outerwear"].includes(i.category));
+  const colors = /* @__PURE__ */ new Map();
+  for (const item of garments) {
+    if (!item.colorFamily) continue;
+    const weight = item.category === "outerwear" ? 2 : 1;
+    colors.set(item.colorFamily, (colors.get(item.colorFamily) || 0) + weight);
+  }
+  const color = Array.from(colors.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+  const main = garments.find((i) => i.category === "onepiece") || garments.find((i) => i.category === "top") || garments[0];
+  const formality = garments.reduce((s, i) => s + i.formality, 0) / Math.max(1, garments.length);
+  return { color, style: main?.style || "casual", formality };
+}
+function pairHarmony(a, b) {
+  const da = dominant(a);
+  const db = dominant(b);
+  let color = 70;
+  if (da.color && db.color) {
+    const aNeutral = NEUTRAL_COLOR_FAMILIES.includes(da.color);
+    const bNeutral = NEUTRAL_COLOR_FAMILIES.includes(db.color);
+    if (da.color === db.color) color = 86;
+    else if (aNeutral && bNeutral) color = 80;
+    else if (aNeutral || bNeutral) color = 82;
+    else color = GOOD_ACCENT_PAIRS.has(pairKey2(da.color, db.color)) ? 84 : 55;
+  }
+  const formality = Math.max(0, 100 - 22 * Math.abs(da.formality - db.formality));
+  const style = 40 + 60 * styleCompat(da.style, db.style);
+  return Math.round(0.45 * color + 0.35 * formality + 0.2 * style);
+}
+function rankPairs(mine, theirs, limit = 5) {
+  const pairs = [];
+  for (const m of mine) {
+    for (const t of theirs) {
+      const score = Math.round(0.5 * ((m.breakdown.total + t.breakdown.total) / 2) + 0.5 * pairHarmony(m, t));
+      pairs.push({ mine: m, theirs: t, score });
+    }
+  }
+  return pairs.sort((a, b) => b.score - a.score).slice(0, limit);
+}
+function harmonyLabel(pair) {
+  const a = dominant(pair.mine).color;
+  const b = dominant(pair.theirs).color;
+  if (a && a === b) return `Ton-s\xFCr-ton ${a} uyumu`;
+  if (a && b && NEUTRAL_COLOR_FAMILIES.includes(a) && NEUTRAL_COLOR_FAMILIES.includes(b)) return "N\xF6tr tonlarda sakin uyum";
+  return "Dengeli renk e\u015Fle\u015Fmesi";
+}
+async function generateCollab(initiator, friend, rawRequest) {
+  const request = sanitizeStylistRequest(rawRequest);
+  const mineRun = await runEngine(initiator, { ...request, requiredItems: [], lockedItems: [], excludedItems: [] }, { mode: "deterministic", candidateLimit: 6 });
+  const friendRun = await runEngine(
+    { _id: friend._id },
+    { ...request, location: void 0, requiredItems: [], lockedItems: [], excludedItems: [], recentOutfits: [] },
+    { mode: "deterministic", candidateLimit: 6, weatherOverride: mineRun.weather, anonymous: true }
+  );
+  const weather = mineRun.ctx.weather;
+  const pairs = rankPairs(mineRun.candidates, friendRun.candidates, 5);
+  const warnings = [...mineRun.warnings];
+  let chosen = pairs[0];
+  let reason = "";
+  let label = harmonyLabel(chosen);
+  let model = null;
+  let usedFallback = false;
+  try {
+    const pairIds = pairs.map((_, i) => `P${i + 1}`);
+    const describe = (outfit) => outfit.items.map((i) => `    ${describeItemForPrompt(i, false)}`).join("\n");
+    const { data, info } = await generateJson({
+      task: "stylist",
+      label: "collab_pick",
+      systemInstruction: "Sen iki ki\u015Filik kombin uyumunda uzman bir stilistsin. T\xFCrk\xE7e, samimi ve k\u0131sa yazars\u0131n. Teknik kimliklerden veya puanlardan bahsetmezsin.",
+      contents: `Etkinlik: ${mineRun.ctx.eventLabel}. ${weather ? `Hava: ${weather.condition}, hissedilen ${weather.feelsLikeC}\xB0C.` : ""}
+
+\u0130ki ki\u015Finin birlikte kat\u0131laca\u011F\u0131 etkinlik i\xE7in haz\u0131rlanm\u0131\u015F kombin \xE7iftleri:
+
+${pairs.map((p, i) => `${pairIds[i]}:
+  ${initiator.name || "Birinci ki\u015Fi"}:
+${describe(p.mine)}
+  ${friend.name || "\u0130kinci ki\u015Fi"}:
+${describe(p.theirs)}`).join("\n\n")}
+
+Birlikte en uyumlu g\xF6r\xFCnecek \xE7ifti se\xE7. styleHarmony: \xE7ifti \xF6zetleyen en fazla 5 kelimelik etiket. collabReason: iki kombinin neden birlikte uyumlu oldu\u011Funu 3 c\xFCmleyle a\xE7\u0131kla.`,
+      schema: {
+        type: "object",
+        properties: {
+          pairId: { type: "string", enum: pairIds },
+          styleHarmony: { type: "string" },
+          collabReason: { type: "string" }
+        },
+        required: ["pairId", "styleHarmony", "collabReason"]
+      }
+    });
+    const index = pairIds.indexOf(data.pairId);
+    if (index >= 0 && data.collabReason?.trim()) {
+      chosen = pairs[index];
+      reason = data.collabReason.trim().slice(0, 700);
+      label = (data.styleHarmony || label).trim().slice(0, 60);
+      model = info.model;
+    } else {
+      usedFallback = true;
+    }
+  } catch {
+    usedFallback = true;
+    warnings.push("AI stilist \u015Fu an yan\u0131t veremedi; \xE7ift kural motoruyla se\xE7ildi.");
+  }
+  if (!reason) {
+    reason = `${label}: iki kombinin bask\u0131n renkleri ve resmiyet d\xFCzeyleri birbirine yak\u0131n, bu y\xFCzden yan yana dengeli g\xF6r\xFCn\xFCyor. Etkinlik (${mineRun.ctx.eventLabel.toLocaleLowerCase("tr-TR")}) i\xE7in ikisi de uygun seviyede.`;
+  }
+  return {
+    myOutfit: chosen.mine.itemIds,
+    friendOutfit: chosen.theirs.itemIds,
+    myItems: chosen.mine.itemIds.map((id) => mineRun.wardrobe.dtoById.get(id)).filter(Boolean),
+    friendItems: chosen.theirs.itemIds.map((id) => friendRun.wardrobe.dtoById.get(id)).filter(Boolean),
+    compatibilityScore: chosen.score,
+    collabReason: reason,
+    styleHarmony: label,
+    weather,
+    model,
+    usedFallback,
+    warnings
+  };
+}
+
+// backend/routes/social.ts
+var OBJECT_ID = /^[a-f0-9]{24}$/i;
+function toSessionDTO(s) {
+  return {
+    id: s.id,
+    initiatorId: s.initiatorId?.toString(),
+    initiatorName: s.initiatorName,
+    friendId: s.friendId?.toString(),
+    friendName: s.friendName,
+    event: s.event,
+    effort: s.effort,
+    mood: s.mood,
+    myOutfit: s.myOutfit,
+    friendOutfit: s.friendOutfit,
+    compatibilityScore: s.compatibilityScore,
+    collabReason: s.collabReason,
+    styleHarmony: s.styleHarmony,
+    seenByFriend: s.seenByFriend,
+    createdAt: s.createdAt
+  };
+}
+function socialRoutes() {
+  const router = express2.Router();
+  router.get("/api/users/explore", authenticateToken, async (req, res) => {
+    try {
+      const users = await UserModel.find({ _id: { $ne: req.user.id }, isPrivate: { $ne: true } }).select("name username createdAt").sort({ createdAt: -1 }).limit(200).lean();
+      const counts = await ItemModel.aggregate([
+        { $match: { userId: { $in: users.map((u) => u._id) } } },
+        { $group: { _id: "$userId", count: { $sum: 1 } } }
+      ]);
+      const countBy = new Map(counts.map((c) => [c._id.toString(), c.count]));
+      res.json({
+        success: true,
+        profiles: users.map((u) => ({
+          id: u._id.toString(),
+          name: u.name,
+          username: u.username,
+          createdAt: u.createdAt,
+          itemCount: countBy.get(u._id.toString()) || 0
+        }))
+      });
+    } catch (err) {
+      sendError(res, err, "Ke\u015Ffet profilleri al\u0131namad\u0131.", "Explore");
+    }
+  });
+  router.get("/api/users/explore/:userId/wardrobe", authenticateToken, async (req, res) => {
+    try {
+      const targetUserId = req.params.userId;
+      if (!OBJECT_ID.test(targetUserId)) return res.status(404).json({ error: "Kullan\u0131c\u0131 bulunamad\u0131." });
+      const targetUser = await UserModel.findOne({ _id: targetUserId });
+      if (!targetUser) return res.status(404).json({ error: "Kullan\u0131c\u0131 bulunamad\u0131." });
+      if (targetUser.isPrivate) return res.status(403).json({ error: "Bu profil gizlidir ve gard\u0131robuna eri\u015Filemez." });
+      const items = await ItemModel.find({ userId: targetUserId }).limit(200).sort({ _id: -1 }).lean();
+      res.json({
+        success: true,
+        user: { id: targetUser._id.toString(), name: targetUser.name, username: targetUser.username },
+        items: items.map(toItemDTO)
+      });
+    } catch (err) {
+      sendError(res, err, "Gard\u0131rop verileri al\u0131namad\u0131.", "Explore Wardrobe");
+    }
+  });
+  router.post("/api/collab/generate", authenticateToken, rateLimit("collab", RATE_LIMITS.collabGenerate, byUser), async (req, res) => {
+    try {
+      const { friendUserId, event, effort, mood } = req.body || {};
+      if (typeof friendUserId !== "string" || !OBJECT_ID.test(friendUserId)) return res.status(400).json({ error: "Arkada\u015F ID'si gereklidir." });
+      if (friendUserId === req.user.id) return res.status(400).json({ error: "Kendinle beraber kombin olu\u015Fturamazs\u0131n." });
+      const initiator = await UserModel.findOne({ _id: req.user.id });
+      if (!initiator) return res.status(404).json({ error: "Kullan\u0131c\u0131 bulunamad\u0131." });
+      const friend = await UserModel.findOne({ _id: friendUserId });
+      if (!friend) return res.status(404).json({ error: "Arkada\u015F bulunamad\u0131." });
+      if (friend.isPrivate) return res.status(403).json({ error: "Bu kullan\u0131c\u0131n\u0131n profili gizlidir." });
+      const collabResult = await generateCollab(initiator, friend, req.body);
+      const collabId = `collab_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const session = await CollabSessionModel.create({
+        id: collabId,
+        initiatorId: initiator._id,
+        initiatorName: initiator.name,
+        friendId: friend._id,
+        friendName: friend.name,
+        event: typeof event === "string" ? event.slice(0, 60) : "G\xFCndelik",
+        effort: typeof effort === "number" ? effort : 5,
+        mood: typeof mood === "string" ? mood.slice(0, 30) : "Rahat",
+        myOutfit: collabResult.myOutfit,
+        friendOutfit: collabResult.friendOutfit,
+        compatibilityScore: collabResult.compatibilityScore,
+        collabReason: collabResult.collabReason,
+        styleHarmony: collabResult.styleHarmony,
+        seenByFriend: false
+      });
+      res.json({
+        success: true,
+        collabId,
+        session: toSessionDTO(session),
+        myOutfit: collabResult.myOutfit,
+        friendOutfit: collabResult.friendOutfit,
+        myItems: collabResult.myItems,
+        friendItems: collabResult.friendItems,
+        compatibilityScore: collabResult.compatibilityScore,
+        collabReason: collabResult.collabReason,
+        styleHarmony: collabResult.styleHarmony,
+        friendName: friend.name,
+        initiatorName: initiator.name,
+        weather: collabResult.weather,
+        warnings: collabResult.warnings
+      });
+    } catch (err) {
+      sendError(res, err, "Beraber kombin olu\u015Fturulamad\u0131.", "Collab Generate");
+    }
+  });
+  router.get("/api/collab/inbox", authenticateToken, async (req, res) => {
+    try {
+      const sessions = await CollabSessionModel.find({ friendId: req.user.id }).sort({ createdAt: -1 }).limit(20).lean();
+      res.json({ success: true, sessions: sessions.map(toSessionDTO), unreadCount: sessions.filter((s) => !s.seenByFriend).length });
+    } catch (err) {
+      sendError(res, err, "Collab bildirimleri al\u0131namad\u0131.", "Collab Inbox");
+    }
+  });
+  router.patch("/api/collab/:id/seen", authenticateToken, async (req, res) => {
+    try {
+      const session = await CollabSessionModel.findOne({ id: String(req.params.id) });
+      if (!session) return res.status(404).json({ error: "Collab bulunamad\u0131." });
+      if (session.friendId?.toString() !== req.user.id) return res.status(403).json({ error: "Bu i\u015Flem i\xE7in yetkiniz yok." });
+      session.seenByFriend = true;
+      await session.save();
+      res.json({ success: true });
+    } catch (err) {
+      sendError(res, err, "G\xFCncelleme ba\u015Far\u0131s\u0131z.", "Collab Seen");
+    }
+  });
+  router.get("/api/collab/sent", authenticateToken, async (req, res) => {
+    try {
+      const sessions = await CollabSessionModel.find({ initiatorId: req.user.id }).sort({ createdAt: -1 }).limit(20).lean();
+      res.json({ success: true, sessions: sessions.map(toSessionDTO) });
+    } catch (err) {
+      sendError(res, err, "G\xF6nderilen collab'lar al\u0131namad\u0131.", "Collab Sent");
+    }
+  });
+  return router;
+}
+
+// backend/routes/wardrobe.ts
+import express3 from "express";
+
 // backend/engine/capsule.ts
+var CAPSULE_TARGETS = ["any", "top", "bottom", "onepiece", "outerwear", "shoes", "accessory"];
 var SAMPLE_LIMIT = 6e4;
 var neutralContext = () => buildContext({ event: "G\xFCndelik", ignoreWeather: true, weather: null });
 function isWearable(items, ctx) {
@@ -5946,139 +6853,6 @@ ${targetText} gard\u0131roba eklendi\u011Finde mevcut par\xE7alarla en \xE7ok ye
   };
 }
 
-// backend/engine/collab.ts
-var pairKey2 = (a, b) => [a, b].sort((x, y) => x.localeCompare(y, "tr")).join("|");
-var GOOD_ACCENT_PAIRS = /* @__PURE__ */ new Set([
-  pairKey2("mavi", "turuncu"),
-  pairKey2("mor", "sar\u0131"),
-  pairKey2("bordo", "ye\u015Fil"),
-  pairKey2("pembe", "ye\u015Fil"),
-  pairKey2("mavi", "pembe"),
-  pairKey2("bordo", "pembe"),
-  pairKey2("mavi", "sar\u0131"),
-  pairKey2("bordo", "k\u0131rm\u0131z\u0131")
-]);
-function dominant(outfit) {
-  const garments = outfit.items.filter((i) => ["top", "bottom", "onepiece", "outerwear"].includes(i.category));
-  const colors = /* @__PURE__ */ new Map();
-  for (const item of garments) {
-    if (!item.colorFamily) continue;
-    const weight = item.category === "outerwear" ? 2 : 1;
-    colors.set(item.colorFamily, (colors.get(item.colorFamily) || 0) + weight);
-  }
-  const color = Array.from(colors.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
-  const main = garments.find((i) => i.category === "onepiece") || garments.find((i) => i.category === "top") || garments[0];
-  const formality = garments.reduce((s, i) => s + i.formality, 0) / Math.max(1, garments.length);
-  return { color, style: main?.style || "casual", formality };
-}
-function pairHarmony(a, b) {
-  const da = dominant(a);
-  const db = dominant(b);
-  let color = 70;
-  if (da.color && db.color) {
-    const aNeutral = NEUTRAL_COLOR_FAMILIES.includes(da.color);
-    const bNeutral = NEUTRAL_COLOR_FAMILIES.includes(db.color);
-    if (da.color === db.color) color = 86;
-    else if (aNeutral && bNeutral) color = 80;
-    else if (aNeutral || bNeutral) color = 82;
-    else color = GOOD_ACCENT_PAIRS.has(pairKey2(da.color, db.color)) ? 84 : 55;
-  }
-  const formality = Math.max(0, 100 - 22 * Math.abs(da.formality - db.formality));
-  const style = 40 + 60 * styleCompat(da.style, db.style);
-  return Math.round(0.45 * color + 0.35 * formality + 0.2 * style);
-}
-function rankPairs(mine, theirs, limit = 5) {
-  const pairs = [];
-  for (const m of mine) {
-    for (const t of theirs) {
-      const score = Math.round(0.5 * ((m.breakdown.total + t.breakdown.total) / 2) + 0.5 * pairHarmony(m, t));
-      pairs.push({ mine: m, theirs: t, score });
-    }
-  }
-  return pairs.sort((a, b) => b.score - a.score).slice(0, limit);
-}
-function harmonyLabel(pair) {
-  const a = dominant(pair.mine).color;
-  const b = dominant(pair.theirs).color;
-  if (a && a === b) return `Ton-s\xFCr-ton ${a} uyumu`;
-  if (a && b && NEUTRAL_COLOR_FAMILIES.includes(a) && NEUTRAL_COLOR_FAMILIES.includes(b)) return "N\xF6tr tonlarda sakin uyum";
-  return "Dengeli renk e\u015Fle\u015Fmesi";
-}
-async function generateCollab(initiator, friend, rawRequest) {
-  const request = sanitizeStylistRequest(rawRequest);
-  const mineRun = await runEngine(initiator, { ...request, requiredItems: [], lockedItems: [], excludedItems: [] }, { mode: "deterministic", candidateLimit: 6 });
-  const friendRun = await runEngine(
-    { _id: friend._id },
-    { ...request, location: void 0, requiredItems: [], lockedItems: [], excludedItems: [], recentOutfits: [] },
-    { mode: "deterministic", candidateLimit: 6 }
-  );
-  const weather = mineRun.ctx.weather;
-  const pairs = rankPairs(mineRun.candidates, friendRun.candidates, 5);
-  const warnings = [...mineRun.warnings];
-  let chosen = pairs[0];
-  let reason = "";
-  let label = harmonyLabel(chosen);
-  let model = null;
-  let usedFallback = false;
-  try {
-    const pairIds = pairs.map((_, i) => `P${i + 1}`);
-    const describe = (outfit) => outfit.items.map((i) => `    ${describeItemForPrompt(i, false)}`).join("\n");
-    const { data, info } = await generateJson({
-      task: "stylist",
-      label: "collab_pick",
-      systemInstruction: "Sen iki ki\u015Filik kombin uyumunda uzman bir stilistsin. T\xFCrk\xE7e, samimi ve k\u0131sa yazars\u0131n. Teknik kimliklerden veya puanlardan bahsetmezsin.",
-      contents: `Etkinlik: ${mineRun.ctx.eventLabel}. ${weather ? `Hava: ${weather.condition}, hissedilen ${weather.feelsLikeC}\xB0C.` : ""}
-
-\u0130ki ki\u015Finin birlikte kat\u0131laca\u011F\u0131 etkinlik i\xE7in haz\u0131rlanm\u0131\u015F kombin \xE7iftleri:
-
-${pairs.map((p, i) => `${pairIds[i]}:
-  ${initiator.name || "Birinci ki\u015Fi"}:
-${describe(p.mine)}
-  ${friend.name || "\u0130kinci ki\u015Fi"}:
-${describe(p.theirs)}`).join("\n\n")}
-
-Birlikte en uyumlu g\xF6r\xFCnecek \xE7ifti se\xE7. styleHarmony: \xE7ifti \xF6zetleyen en fazla 5 kelimelik etiket. collabReason: iki kombinin neden birlikte uyumlu oldu\u011Funu 3 c\xFCmleyle a\xE7\u0131kla.`,
-      schema: {
-        type: "object",
-        properties: {
-          pairId: { type: "string", enum: pairIds },
-          styleHarmony: { type: "string" },
-          collabReason: { type: "string" }
-        },
-        required: ["pairId", "styleHarmony", "collabReason"]
-      }
-    });
-    const index = pairIds.indexOf(data.pairId);
-    if (index >= 0 && data.collabReason?.trim()) {
-      chosen = pairs[index];
-      reason = data.collabReason.trim().slice(0, 700);
-      label = (data.styleHarmony || label).trim().slice(0, 60);
-      model = info.model;
-    } else {
-      usedFallback = true;
-    }
-  } catch {
-    usedFallback = true;
-    warnings.push("AI stilist \u015Fu an yan\u0131t veremedi; \xE7ift kural motoruyla se\xE7ildi.");
-  }
-  if (!reason) {
-    reason = `${label}: iki kombinin bask\u0131n renkleri ve resmiyet d\xFCzeyleri birbirine yak\u0131n, bu y\xFCzden yan yana dengeli g\xF6r\xFCn\xFCyor. Etkinlik (${mineRun.ctx.eventLabel.toLocaleLowerCase("tr-TR")}) i\xE7in ikisi de uygun seviyede.`;
-  }
-  return {
-    myOutfit: chosen.mine.itemIds,
-    friendOutfit: chosen.theirs.itemIds,
-    myItems: chosen.mine.items,
-    friendItems: chosen.theirs.items,
-    compatibilityScore: chosen.score,
-    collabReason: reason,
-    styleHarmony: label,
-    weather,
-    model,
-    usedFallback,
-    warnings
-  };
-}
-
 // backend/vision.ts
 import { MediaResolution as MediaResolution2 } from "@google/genai";
 import pngjs from "pngjs";
@@ -6210,800 +6984,176 @@ function applyAnalysisToItem(doc, analysis, options = {}) {
 function itemNeedsEnrichment(doc) {
   return missingFields(doc).length > 0;
 }
-
-// server.ts
-dotenv.config();
-var __filename = fileURLToPath(import.meta.url);
-var __dirname = path.dirname(__filename);
-var storage = new CloudinaryStorage({
-  cloudinary,
-  params: async (req, file) => {
-    const userId = req.user?.id || "public";
-    const uniqueId = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const originalNameClean = file.originalname.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_\-.]/g, "");
-    const cleanPublicId = originalNameClean.replace(/\.[^/.]+$/, "");
-    return {
-      folder: `digital_wardrobe/${userId}`,
-      allowed_formats: ["jpg", "jpeg", "png", "webp"],
-      public_id: `${cleanPublicId}_${uniqueId}`
-    };
-  }
-});
-var upload = multer({ storage, limits: { fileSize: 15 * 1024 * 1024 } });
-var FALLBACK_JWT_SECRET = "Hnc3Mxz9wO3WfpYRs4LTgme8bZXbsBAcknOunOfIPGsMqg3kqyjg08CHJBKp/olM";
-function getJwtSecret() {
-  const secret = process.env.JWT_SECRET;
-  if (secret && secret.trim().length >= 32) {
-    return secret.trim();
-  }
-  return FALLBACK_JWT_SECRET;
-}
-var JWT_SECRET = getJwtSecret();
-var LEGACY_OWNER_EMAIL = "samet@aura.com";
-async function runMigration() {
-  try {
-    const usersWithoutUsername = await UserModel.find({ username: { $exists: false } });
-    for (const u of usersWithoutUsername) {
-      const emailPrefix = u.email.split("@")[0].toLowerCase().replace(/[^a-z0-9]/g, "");
-      const uniqueSuffix = Math.random().toString(36).slice(2, 6);
-      u.username = `${emailPrefix}_${uniqueSuffix}`;
-      await u.save();
-      console.log(`[Migration] ${u.email} kullan\u0131c\u0131s\u0131na default kullan\u0131c\u0131 ad\u0131 (${u.username}) tan\u0131mland\u0131.`);
+var SEGMENTATION_SCHEMA = {
+  type: "object",
+  properties: {
+    masks: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          box_2d: { type: "array", minItems: 4, maxItems: 4, items: { type: "integer" } },
+          mask: { type: "string" },
+          label: { type: "string" }
+        },
+        required: ["box_2d", "mask", "label"]
+      }
     }
-    const usersWithoutPrivacy = await UserModel.find({ isPrivate: { $exists: false } });
-    if (usersWithoutPrivacy.length > 0) {
-      await UserModel.updateMany({ isPrivate: { $exists: false } }, { $set: { isPrivate: false } });
-      console.log(`[Migration] ${usersWithoutPrivacy.length} kullan\u0131c\u0131n\u0131n gizlilik ayar\u0131 varsay\u0131lan (false) yap\u0131ld\u0131.`);
-    }
-    const itemsWithoutUser = await ItemModel.find({ userId: { $exists: false } });
-    const outfitsWithoutUser = await OutfitModel.find({ userId: { $exists: false } });
-    if (itemsWithoutUser.length === 0 && outfitsWithoutUser.length === 0) return;
-    const legacyOwner = await UserModel.findOne({ email: LEGACY_OWNER_EMAIL });
-    if (!legacyOwner) {
-      console.warn(`[Migration] ${LEGACY_OWNER_EMAIL} hesab\u0131 bulunamad\u0131; sahipsiz kay\u0131tlar ba\u011Flanmadan b\u0131rak\u0131ld\u0131.`);
-      return;
-    }
-    if (itemsWithoutUser.length > 0) {
-      console.log(`[Migration] ${itemsWithoutUser.length} adet sahipsiz gard\u0131rop \xF6\u011Fesi ${LEGACY_OWNER_EMAIL} hesab\u0131na ba\u011Flan\u0131yor...`);
-      await ItemModel.updateMany({ userId: { $exists: false } }, { $set: { userId: legacyOwner._id } });
-      console.log("[Migration] Gard\u0131rop \xF6\u011Feleri ba\u015Far\u0131yla g\xFCncellendi.");
-    }
-    if (outfitsWithoutUser.length > 0) {
-      console.log(`[Migration] ${outfitsWithoutUser.length} adet sahipsiz kombin ${LEGACY_OWNER_EMAIL} hesab\u0131na ba\u011Flan\u0131yor...`);
-      await OutfitModel.updateMany({ userId: { $exists: false } }, { $set: { userId: legacyOwner._id } });
-      console.log("[Migration] Kombinler ba\u015Far\u0131yla g\xFCncellendi.");
-    }
-  } catch (err) {
-    console.error("[Migration] Hata olu\u015Ftu:", err);
-  }
-}
-setOnFirstConnect(runMigration);
-connectToDatabase().catch((err) => console.error("[MongoDB] \u0130lk ba\u011Flant\u0131 hatas\u0131:", err));
-async function analyzeImageData(base64, mimeType) {
-  try {
-    const { analysis } = await analyzeClothingImage(base64, mimeType);
-    return analysis;
-  } catch (err) {
-    console.error("[Vision] Analiz hatas\u0131:", err);
-    return null;
-  }
-}
-async function analyzeImageUrl(url) {
-  try {
-    const downloaded = await downloadOwnImage(url);
-    if (!downloaded) return null;
-    return analyzeImageData(downloaded.base64, downloaded.mimeType);
-  } catch (e) {
-    console.error("[Vision] Foto\u011Fraf indirilirken hata:", e);
-    return null;
-  }
-}
-var app = express();
-var PORT = 3e3;
-var allowedOrigins = [
-  process.env.APP_URL,
-  "https://samethabali.github.io",
-  "https://aura-mobile.expo.app",
-  "exp://aura-mobile.expo.app",
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "http://localhost:8081",
-  "exp://localhost:8081"
-];
-app.use(cors({
-  origin: function(origin, callback) {
-    const isVercel = origin && origin.endsWith(".vercel.app");
-    const isLocalIp = origin && (origin.startsWith("http://192.168.") || origin.startsWith("exp://192.168.") || origin.startsWith("http://172.") || origin.startsWith("exp://172.") || origin.startsWith("http://10.") || origin.startsWith("exp://10."));
-    if (!origin || allowedOrigins.includes(origin) || isVercel || isLocalIp) {
-      callback(null, true);
-    } else {
-      console.warn(`[CORS] Engellenen origin: ${origin}`);
-      callback(null, false);
-    }
-  }
-}));
-app.use(express.json({ limit: "20mb" }));
-app.use(async (req, res, next) => {
-  try {
-    await connectToDatabase();
-    next();
-  } catch (err) {
-    console.error("[MongoDB Middleware] Ba\u011Flant\u0131 kurulamad\u0131:", err);
-    res.status(500).json({ error: "Veritaban\u0131 ba\u011Flant\u0131s\u0131 kurulamad\u0131. L\xFCtfen daha sonra tekrar deneyin." });
-  }
-});
-app.use((req, res, next) => {
-  console.log(`[Server] ${req.method} ${req.url}`);
-  next();
-});
-function authenticateToken(req, res, next) {
-  const authHeader = req.headers["authorization"];
-  const token = authHeader && authHeader.split(" ")[1];
-  if (!token) {
-    return res.status(401).json({ error: "Eri\u015Fim engellendi. Token eksik." });
-  }
-  jwt.verify(token, JWT_SECRET, { algorithms: ["HS256"] }, (err, user) => {
-    if (err) {
-      return res.status(403).json({ error: "Ge\xE7ersiz veya s\xFCresi dolmu\u015F token." });
-    }
-    req.user = user;
-    next();
-  });
-}
-var MINUTE = 60 * 1e3;
-var HOUR = 60 * MINUTE;
-var RATE_LIMITS = {
-  register: { max: 10, windowMs: HOUR },
-  // IP başına
-  login: { max: 10, windowMs: 15 * MINUTE },
-  // IP + e-posta başına
-  generateOutfit: { max: 60, windowMs: HOUR },
-  // Kullanıcı başına (aşağıdakilerin hepsi)
-  analyzeImage: { max: 60, windowMs: HOUR },
-  upload: { max: 60, windowMs: HOUR },
-  capsuleAnalysis: { max: 20, windowMs: HOUR },
-  collabGenerate: { max: 20, windowMs: HOUR },
-  enrich: { max: 5, windowMs: HOUR }
+  },
+  required: ["masks"]
 };
-function getClientIp(req) {
-  const realIp = req.headers["x-real-ip"];
-  if (process.env.VERCEL && typeof realIp === "string" && realIp) return realIp;
-  return req.socket.remoteAddress || "unknown";
+function sampleMask(mask, u, v) {
+  const x = Math.min(mask.width - 1, Math.max(0, u * (mask.width - 1)));
+  const y = Math.min(mask.height - 1, Math.max(0, v * (mask.height - 1)));
+  const x0 = Math.floor(x), y0 = Math.floor(y);
+  const x1 = Math.min(mask.width - 1, x0 + 1), y1 = Math.min(mask.height - 1, y0 + 1);
+  const fx = x - x0, fy = y - y0;
+  const at = (xx, yy) => mask.data[(yy * mask.width + xx) * 4];
+  const top = at(x0, y0) * (1 - fx) + at(x1, y0) * fx;
+  const bottom = at(x0, y1) * (1 - fx) + at(x1, y1) * fx;
+  return top * (1 - fy) + bottom * fy;
 }
-async function incrementRateCounter(key, expiresAt) {
-  const update = { $inc: { count: 1 }, $setOnInsert: { expiresAt } };
-  const options = { upsert: true, returnDocument: "after" };
-  try {
-    return await RateLimitModel.findOneAndUpdate({ key }, update, options);
-  } catch (err) {
-    if (err?.code === 11e3) return await RateLimitModel.findOneAndUpdate({ key }, update, options);
-    throw err;
-  }
-}
-function rateLimit(bucket, limit, getIdentity) {
-  return async (req, res, next) => {
-    const windowStart = Math.floor(Date.now() / limit.windowMs) * limit.windowMs;
-    const windowEnd = windowStart + limit.windowMs;
-    try {
-      const counter = await incrementRateCounter(`${bucket}:${getIdentity(req)}:${windowStart}`, new Date(windowEnd));
-      if (counter.count > limit.max) {
-        const retryAfterSec = Math.ceil((windowEnd - Date.now()) / 1e3);
-        res.setHeader("Retry-After", String(retryAfterSec));
-        return res.status(429).json({ error: `\xC7ok fazla istek g\xF6nderdin. L\xFCtfen ${Math.ceil(retryAfterSec / 60)} dakika sonra tekrar dene.` });
+function composeCutout(imagePng, maskPng, box) {
+  const image = PNG.sync.read(imagePng);
+  const mask = PNG.sync.read(maskPng);
+  const [ny0, nx0, ny1, nx1] = box.map((v) => Math.min(1e3, Math.max(0, v)) / 1e3);
+  const bx0 = Math.floor(nx0 * image.width), by0 = Math.floor(ny0 * image.height);
+  const bx1 = Math.ceil(nx1 * image.width), by1 = Math.ceil(ny1 * image.height);
+  const boxW = Math.max(1, bx1 - bx0), boxH = Math.max(1, by1 - by0);
+  const pad = Math.round(Math.max(boxW, boxH) * 0.04);
+  const cx0 = Math.max(0, bx0 - pad), cy0 = Math.max(0, by0 - pad);
+  const cx1 = Math.min(image.width, bx1 + pad), cy1 = Math.min(image.height, by1 + pad);
+  const out = new PNG({ width: cx1 - cx0, height: cy1 - cy0 });
+  for (let y = cy0; y < cy1; y++) {
+    for (let x = cx0; x < cx1; x++) {
+      const src = (y * image.width + x) * 4;
+      const dst = ((y - cy0) * out.width + (x - cx0)) * 4;
+      out.data[dst] = image.data[src];
+      out.data[dst + 1] = image.data[src + 1];
+      out.data[dst + 2] = image.data[src + 2];
+      let alpha = 0;
+      if (x >= bx0 && x < bx1 && y >= by0 && y < by1) {
+        const probability = sampleMask(mask, (x - bx0) / boxW, (y - by0) / boxH);
+        alpha = Math.max(0, Math.min(255, Math.round((probability - 96) * 255 / 64)));
       }
-      next();
-    } catch (err) {
-      console.error(`[RateLimit] ${bucket} sayac\u0131 g\xFCncellenemedi:`, err);
-      res.status(503).json({ error: "\u0130stek \u015Fu an i\u015Flenemiyor. L\xFCtfen biraz sonra tekrar dene." });
+      out.data[dst + 3] = Math.round(alpha * (image.data[src + 3] / 255));
     }
-  };
+  }
+  return PNG.sync.write(out);
 }
-var byUser = (req) => req.user.id;
-var byIp = (req) => getClientIp(req);
-var byIpAndEmail = (req) => `${getClientIp(req)}:${String(req.body?.email || "").trim().toLowerCase()}`;
-if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
-  app.get("/api/debug-models", async (_req, res) => {
-    try {
-      res.json({
-        stylist: modelsFor("stylist"),
-        vision: modelsFor("vision"),
-        light: modelsFor("light")
-      });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
+async function createCutout(item, userId) {
+  const source = await downloadOwnImage(withTransformation(item.imagePath, "f_png,w_768"));
+  if (!source) throw new AiError("bad_request", "Par\xE7a g\xF6rseli indirilemedi.");
+  const { data } = await generateJson({
+    task: "segmentation",
+    label: "cutout_mask",
+    contents: [
+      { inlineData: { mimeType: "image/png", data: source.base64 } },
+      { text: 'Foto\u011Fraftaki ana k\u0131yafet veya aksesuar\u0131n segmentasyon maskesini ver. Her giri\u015F i\xE7in "box_2d" ([y0, x0, y1, x1], 0-1000 aral\u0131\u011F\u0131nda), "mask" (base64 PNG olas\u0131l\u0131k haritas\u0131) ve "label" alanlar\u0131n\u0131 d\xF6nd\xFCr. Arka plan\u0131, ask\u0131y\u0131, mankeni veya ki\u015Fiyi dahil etme.' }
+    ],
+    schema: SEGMENTATION_SCHEMA
+  });
+  const masks = (data?.masks || []).filter((m) => Array.isArray(m.box_2d) && m.box_2d.length === 4 && typeof m.mask === "string");
+  if (masks.length === 0) throw new AiError("invalid_output", "Par\xE7a g\xF6rselde ay\u0131rt edilemedi.");
+  const area = (m) => Math.max(0, m.box_2d[2] - m.box_2d[0]) * Math.max(0, m.box_2d[3] - m.box_2d[1]);
+  const main = masks.sort((a, b) => area(b) - area(a))[0];
+  const maskBase64 = main.mask.replace(/^data:image\/png;base64,/, "");
+  let cutout;
+  try {
+    cutout = composeCutout(source.buffer, Buffer.from(maskBase64, "base64"), main.box_2d);
+  } catch {
+    throw new AiError("invalid_output", "Maske i\u015Flenemedi.");
+  }
+  const publicId = getPublicIdFromUrl(item.imagePath);
+  const baseName = publicId ? publicId.split("/").pop() : `item_${Date.now()}`;
+  return uploadPng(`data:image/png;base64,${cutout.toString("base64")}`, {
+    folder: `digital_wardrobe/${userId}`,
+    public_id: `${baseName}_cutout`
   });
 }
-app.post("/api/auth/register", rateLimit("register", RATE_LIMITS.register, byIp), async (req, res) => {
-  try {
-    let { email, password, name, username } = req.body;
-    if (!email || !password || !name || !username) {
-      return res.status(400).json({ error: "L\xFCtfen t\xFCm alanlar\u0131 doldurun." });
-    }
-    email = String(email).trim().toLowerCase();
-    password = String(password).trim();
-    name = String(name).trim();
-    const cleanUsername = String(username).trim().toLowerCase().replace(/\s+/g, "");
-    if (!email || !password || !name || !cleanUsername) {
-      return res.status(400).json({ error: "L\xFCtfen t\xFCm alanlar\u0131 ge\xE7erli de\u011Ferlerle doldurun." });
-    }
-    if (cleanUsername.length < 3) {
-      return res.status(400).json({ error: "Kullan\u0131c\u0131 ad\u0131 en az 3 karakter olmal\u0131d\u0131r." });
-    }
-    const existingUser = await UserModel.findOne({ email });
-    if (existingUser) {
-      return res.status(400).json({ error: "Bu e-posta adresi zaten kullan\u0131mda." });
-    }
-    const existingUsername = await UserModel.findOne({ username: cleanUsername });
-    if (existingUsername) {
-      return res.status(400).json({ error: "Bu kullan\u0131c\u0131 ad\u0131 zaten al\u0131nm\u0131\u015F." });
-    }
-    const passwordHash = await bcrypt.hash(password, 10);
-    const newUser = new UserModel({
-      email: email.toLowerCase(),
-      username: cleanUsername,
-      passwordHash,
-      name,
-      createdAt: /* @__PURE__ */ new Date()
-    });
-    await newUser.save();
-    const token = jwt.sign(
-      { id: newUser._id.toString(), email: newUser.email, username: newUser.username, name: newUser.name, isPrivate: false },
-      JWT_SECRET,
-      { expiresIn: "30d" }
-    );
-    res.json({
-      success: true,
-      token,
-      user: {
-        id: newUser._id.toString(),
-        email: newUser.email,
-        username: newUser.username,
-        name: newUser.name,
-        isPrivate: false
-      }
-    });
-  } catch (err) {
-    console.error("[Register] Hata:", err);
-    res.status(500).json({ error: "Kay\u0131t i\u015Flemi ba\u015Far\u0131s\u0131z oldu." });
-  }
-});
-app.post("/api/auth/login", rateLimit("login", RATE_LIMITS.login, byIpAndEmail), async (req, res) => {
-  try {
-    let { email, password } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ error: "E-posta ve \u015Fifre gereklidir." });
-    }
-    email = String(email).trim().toLowerCase();
-    password = String(password).trim();
-    if (!email || !password) {
-      return res.status(400).json({ error: "E-posta ve \u015Fifre bo\u015F b\u0131rak\u0131lamaz." });
-    }
-    const user = await UserModel.findOne({ email });
-    if (!user) {
-      return res.status(401).json({ error: "Hatal\u0131 e-posta veya \u015Fifre." });
-    }
-    const isMatch = await bcrypt.compare(password, user.passwordHash);
-    if (!isMatch) {
-      return res.status(401).json({ error: "Hatal\u0131 e-posta veya \u015Fifre." });
-    }
-    const token = jwt.sign(
-      { id: user._id.toString(), email: user.email, username: user.username || "", name: user.name, isPrivate: user.isPrivate || false },
-      JWT_SECRET,
-      { expiresIn: "30d" }
-    );
-    res.json({
-      success: true,
-      token,
-      user: {
-        id: user._id.toString(),
-        email: user.email,
-        username: user.username || "",
-        name: user.name,
-        isPrivate: user.isPrivate || false
-      }
-    });
-  } catch (err) {
-    console.error("[Login] Hata:", err);
-    res.status(500).json({ error: "Giri\u015F i\u015Flemi ba\u015Far\u0131s\u0131z oldu." });
-  }
-});
-app.get("/api/auth/me", authenticateToken, async (req, res) => {
-  try {
-    const user = await UserModel.findOne({ _id: req.user.id });
-    if (!user) return res.status(404).json({ error: "Kullan\u0131c\u0131 bulunamad\u0131." });
-    res.json({
-      user: {
-        id: user._id.toString(),
-        email: user.email,
-        username: user.username || "",
-        name: user.name,
-        isPrivate: user.isPrivate || false
-      }
-    });
-  } catch (err) {
-    res.status(500).json({ error: "Sunucu hatas\u0131." });
-  }
-});
-app.put("/api/auth/profile", authenticateToken, async (req, res) => {
-  try {
-    const { email, username, name, password, isPrivate } = req.body;
-    const user = await UserModel.findOne({ _id: req.user.id });
-    if (!user) return res.status(404).json({ error: "Kullan\u0131c\u0131 bulunamad\u0131." });
-    if (email && email.toLowerCase() !== user.email) {
-      const existingEmail = await UserModel.findOne({ email: email.toLowerCase() });
-      if (existingEmail) return res.status(400).json({ error: "Bu e-posta zaten kullan\u0131mda." });
-      user.email = email.toLowerCase();
-    }
-    if (username && username.trim().toLowerCase() !== user.username) {
-      const cleanUsername = username.trim().toLowerCase().replace(/\s+/g, "");
-      if (cleanUsername.length < 3) return res.status(400).json({ error: "Kullan\u0131c\u0131 ad\u0131 en az 3 karakter olmal\u0131d\u0131r." });
-      const existingUsername = await UserModel.findOne({ username: cleanUsername });
-      if (existingUsername) return res.status(400).json({ error: "Bu kullan\u0131c\u0131 ad\u0131 zaten al\u0131nm\u0131\u015F." });
-      user.username = cleanUsername;
-    }
-    if (name) {
-      user.name = name;
-    }
-    if (password) {
-      if (password.length < 6) return res.status(400).json({ error: "\u015Eifre en az 6 karakter olmal\u0131d\u0131r." });
-      user.passwordHash = await bcrypt.hash(password, 10);
-    }
-    if (typeof isPrivate === "boolean") {
-      user.isPrivate = isPrivate;
-    }
-    await user.save();
-    const token = jwt.sign(
-      { id: user._id.toString(), email: user.email, username: user.username, name: user.name, isPrivate: user.isPrivate },
-      JWT_SECRET,
-      { expiresIn: "30d" }
-    );
-    res.json({
-      success: true,
-      token,
-      user: {
-        id: user._id.toString(),
-        email: user.email,
-        username: user.username,
-        name: user.name,
-        isPrivate: user.isPrivate
-      }
-    });
-  } catch (err) {
-    console.error("[Profile Update] Hata:", err);
-    res.status(500).json({ error: "Profil g\xFCncellenemedi." });
-  }
-});
-app.delete("/api/auth/profile", authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const items = await ItemModel.find({ userId });
-    const publicIds = items.map((item) => getOwnedPublicId(item.imagePath, userId)).filter(Boolean);
-    if (publicIds.length > 0) {
-      console.log(`[Account Delete] ${publicIds.length} adet g\xF6rsel Cloudinary'den siliniyor...`);
-      try {
-        await cloudinary.api.delete_resources(publicIds);
-      } catch (cloudinaryErr) {
-        console.error("[Account Delete] Cloudinary g\xF6rselleri silinirken hata:", cloudinaryErr);
-      }
-    }
-    await ItemModel.deleteMany({ userId });
-    await OutfitModel.deleteMany({ userId });
-    await deletePersonalizationData(userId);
-    await UserModel.deleteOne({ _id: userId });
-    console.log(`[Account Delete] ${req.user.email} hesab\u0131 ve t\xFCm verileri silindi.`);
-    res.json({ success: true, message: "Hesab\u0131n\u0131z ve t\xFCm verileriniz ba\u015Far\u0131yla silindi." });
-  } catch (err) {
-    console.error("[Account Delete] Hata:", err);
-    res.status(500).json({ error: "Hesap silme i\u015Flemi ba\u015Far\u0131s\u0131z oldu." });
-  }
-});
-app.get("/api/users/explore", authenticateToken, async (req, res) => {
-  try {
-    const users = await UserModel.find({
-      _id: { $ne: req.user.id },
-      isPrivate: { $ne: true }
-    }).select("-passwordHash").sort({ createdAt: -1 });
-    const exploreProfiles = await Promise.all(users.map(async (u) => {
-      const itemCount = await ItemModel.countDocuments({ userId: u._id });
-      return {
-        id: u._id.toString(),
-        name: u.name,
-        username: u.username,
-        createdAt: u.createdAt,
-        itemCount
-      };
-    }));
-    res.json({ success: true, profiles: exploreProfiles });
-  } catch (err) {
-    console.error("[Explore] Error:", err);
-    res.status(500).json({ error: "Ke\u015Ffet profilleri al\u0131namad\u0131." });
-  }
-});
-app.get("/api/users/explore/:userId/wardrobe", authenticateToken, async (req, res) => {
-  try {
-    const targetUserId = req.params.userId;
-    const targetUser = await UserModel.findOne({ _id: targetUserId });
-    if (!targetUser) {
-      return res.status(404).json({ error: "Kullan\u0131c\u0131 bulunamad\u0131." });
-    }
-    if (targetUser.isPrivate) {
-      return res.status(403).json({ error: "Bu profil gizlidir ve gard\u0131robuna eri\u015Filemez." });
-    }
-    const items = await ItemModel.find({ userId: targetUserId }).limit(200).sort({ _id: -1 });
-    res.json({
-      success: true,
-      user: {
-        id: targetUser._id.toString(),
-        name: targetUser.name,
-        username: targetUser.username
-      },
-      items
-    });
-  } catch (err) {
-    console.error("[Explore Wardrobe] Error:", err);
-    res.status(500).json({ error: "Gard\u0131rop verileri al\u0131namad\u0131." });
-  }
-});
-app.post("/api/collab/generate", authenticateToken, rateLimit("collab", RATE_LIMITS.collabGenerate, byUser), async (req, res) => {
-  try {
-    const { friendUserId, event, effort, mood, ignoreWeather, location } = req.body;
-    if (!friendUserId) return res.status(400).json({ error: "Arkada\u015F ID'si gereklidir." });
-    const initiator = await UserModel.findOne({ _id: req.user.id });
-    if (!initiator) return res.status(404).json({ error: "Kullan\u0131c\u0131 bulunamad\u0131." });
-    const friend = await UserModel.findOne({ _id: friendUserId });
-    if (!friend) return res.status(404).json({ error: "Arkada\u015F bulunamad\u0131." });
-    if (friend.isPrivate) {
-      return res.status(403).json({ error: "Bu kullan\u0131c\u0131n\u0131n profili gizlidir." });
-    }
-    const collabResult = await generateCollab(initiator, friend, {
-      event,
-      effort,
-      mood,
-      ignoreWeather,
-      location
-    });
-    const collabId = `collab_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const session = new CollabSessionModel({
-      id: collabId,
-      initiatorId: initiator._id,
-      initiatorName: initiator.name,
-      friendId: friend._id,
-      friendName: friend.name,
-      event: event || "G\xFCndelik",
-      effort: effort || 5,
-      mood: mood || "Rahat",
-      myOutfit: collabResult.myOutfit,
-      friendOutfit: collabResult.friendOutfit,
-      compatibilityScore: collabResult.compatibilityScore,
-      collabReason: collabResult.collabReason,
-      styleHarmony: collabResult.styleHarmony,
-      seenByFriend: false,
-      createdAt: /* @__PURE__ */ new Date()
-    });
-    await session.save();
-    console.log(`[Collab] ${initiator.name} + ${friend.name} \u2192 ${collabId} (Uyum: %${collabResult.compatibilityScore})`);
-    res.json({
-      success: true,
-      collabId,
-      session,
-      myOutfit: collabResult.myOutfit,
-      friendOutfit: collabResult.friendOutfit,
-      myItems: collabResult.myItems,
-      friendItems: collabResult.friendItems,
-      compatibilityScore: collabResult.compatibilityScore,
-      collabReason: collabResult.collabReason,
-      styleHarmony: collabResult.styleHarmony,
-      friendName: friend.name,
-      initiatorName: initiator.name,
-      weather: collabResult.weather,
-      warnings: collabResult.warnings
-    });
-  } catch (err) {
-    console.error("[Collab Generate] Hata:", err);
-    res.status(err?.status || 500).json({ error: "Beraber kombin olu\u015Fturulamad\u0131.", details: err instanceof Error ? err.message : "Unknown" });
-  }
-});
-app.get("/api/collab/inbox", authenticateToken, async (req, res) => {
-  try {
-    const sessions = await CollabSessionModel.find({ friendId: req.user.id }).sort({ createdAt: -1 }).limit(20);
-    const unreadCount = sessions.filter((s) => !s.seenByFriend).length;
-    res.json({
-      success: true,
-      sessions: sessions.map((s) => ({
-        id: s.id,
-        initiatorId: s.initiatorId?.toString(),
-        initiatorName: s.initiatorName,
-        friendId: s.friendId?.toString(),
-        friendName: s.friendName,
-        event: s.event,
-        effort: s.effort,
-        mood: s.mood,
-        myOutfit: s.myOutfit,
-        friendOutfit: s.friendOutfit,
-        compatibilityScore: s.compatibilityScore,
-        collabReason: s.collabReason,
-        styleHarmony: s.styleHarmony,
-        seenByFriend: s.seenByFriend,
-        createdAt: s.createdAt
-      })),
-      unreadCount
-    });
-  } catch (err) {
-    console.error("[Collab Inbox] Hata:", err);
-    res.status(500).json({ error: "Collab bildirimleri al\u0131namad\u0131." });
-  }
-});
-app.patch("/api/collab/:id/seen", authenticateToken, async (req, res) => {
-  try {
-    const session = await CollabSessionModel.findOne({ id: req.params.id });
-    if (!session) return res.status(404).json({ error: "Collab bulunamad\u0131." });
-    if (session.friendId?.toString() !== req.user.id) {
-      return res.status(403).json({ error: "Bu i\u015Flem i\xE7in yetkiniz yok." });
-    }
-    session.seenByFriend = true;
-    await session.save();
-    res.json({ success: true });
-  } catch (err) {
-    console.error("[Collab Seen] Hata:", err);
-    res.status(500).json({ error: "G\xFCncelleme ba\u015Far\u0131s\u0131z." });
-  }
-});
-app.get("/api/collab/sent", authenticateToken, async (req, res) => {
-  try {
-    const sessions = await CollabSessionModel.find({ initiatorId: req.user.id }).sort({ createdAt: -1 }).limit(20);
-    res.json({
-      success: true,
-      sessions: sessions.map((s) => ({
-        id: s.id,
-        initiatorId: s.initiatorId?.toString(),
-        initiatorName: s.initiatorName,
-        friendId: s.friendId?.toString(),
-        friendName: s.friendName,
-        event: s.event,
-        effort: s.effort,
-        mood: s.mood,
-        myOutfit: s.myOutfit,
-        friendOutfit: s.friendOutfit,
-        compatibilityScore: s.compatibilityScore,
-        collabReason: s.collabReason,
-        styleHarmony: s.styleHarmony,
-        seenByFriend: s.seenByFriend,
-        createdAt: s.createdAt
-      }))
-    });
-  } catch (err) {
-    console.error("[Collab Sent] Hata:", err);
-    res.status(500).json({ error: "G\xF6nderilen collab'lar al\u0131namad\u0131." });
-  }
-});
-app.get("/api/wardrobe", authenticateToken, async (req, res) => {
-  try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 50;
-    const skip = (page - 1) * limit;
-    const total = await ItemModel.countDocuments({ userId: req.user.id });
-    const items = await ItemModel.find({ userId: req.user.id }).skip(skip).limit(limit).sort({ _id: -1 });
-    res.json({
-      items,
-      total,
-      page,
-      totalPages: Math.ceil(total / limit),
-      hasMore: page * limit < total
-    });
-  } catch (err) {
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-app.get("/api/health", (_req, res) => res.json({ status: "ok", timestamp: (/* @__PURE__ */ new Date()).toISOString() }));
-app.post("/api/wardrobe/scan", authenticateToken, async (_req, res) => {
-  res.json({ success: true, added: 0, message: "Tarama art\u0131k desteklenmiyor (Bulut tabanl\u0131)" });
-});
-app.post("/api/wardrobe/enrich", authenticateToken, rateLimit("enrich", RATE_LIMITS.enrich, byUser), async (req, res) => {
-  try {
-    const items = await ItemModel.find({ userId: req.user.id });
-    const targets = items.filter(itemNeedsEnrichment);
-    if (targets.length === 0) {
-      return res.json({ success: true, enriched: 0, message: "T\xFCm \xF6\u011Feler zaten eksiksiz." });
-    }
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-    const sendEvent = (data) => res.write(`data: ${JSON.stringify(data)}
 
-`);
-    sendEvent({ type: "start", total: targets.length });
-    let enriched = 0;
-    let failed = 0;
-    for (const item of targets) {
-      sendEvent({ type: "progress", current: enriched + failed + 1, total: targets.length, name: item.name });
-      try {
-        const downloaded = item.imagePath ? await downloadOwnImage(item.imagePath) : null;
-        if (downloaded) {
-          const { analysis } = await analyzeClothingImage(downloaded.base64, downloaded.mimeType);
-          applyAnalysisToItem(item, analysis);
-          item.enrichAttemptedAt = /* @__PURE__ */ new Date();
-          await item.save();
-          enriched++;
-          sendEvent({ type: "item_done", id: item.id, name: item.name, category: item.category, color: item.color });
-        } else {
-          failed++;
-        }
-      } catch {
-        failed++;
+// backend/embeddings.ts
+function itemEmbeddingText(item) {
+  const parts = [
+    `Kategori: ${CATEGORY_LABELS[item.category] || item.category || ""}`,
+    item.subCategory && `T\xFCr: ${item.subCategory}`,
+    item.color && `Renk: ${item.color}`,
+    item.colorFamily && `Renk ailesi: ${item.colorFamily}`,
+    item.material && `Kuma\u015F: ${item.material}`,
+    item.pattern && `Desen: ${item.pattern}`,
+    item.fit && `Kesim: ${item.fit}`,
+    item.style && `Stil: ${STYLE_LABELS[item.style] || item.style}`,
+    item.formality && `Resmiyet: ${FORMALITY_LABELS[item.formality] || item.formality}`,
+    item.warmth && `S\u0131cak tutma: ${WARMTH_LABELS[item.warmth] || item.warmth}`
+  ];
+  return parts.filter(Boolean).join(". ");
+}
+async function computeItemEmbedding(item, image) {
+  let source = image || null;
+  if (!source && item.imagePath) {
+    const downloaded = await downloadOwnImage(withTransformation(item.imagePath, "f_jpg,q_auto,w_512"));
+    source = downloaded ? { base64: downloaded.base64, mimeType: downloaded.mimeType } : null;
+  }
+  return embed({ text: itemEmbeddingText(item), image: source || void 0 }, "item_embedding");
+}
+function applyEmbedding(doc, vector) {
+  if (!vector) return;
+  doc.embedding = vector;
+  doc.embeddingModel = EMBEDDING_MODEL;
+}
+function findSimilarItems(vector, candidates, options = {}) {
+  if (!vector) return [];
+  const threshold = options.threshold ?? 0.9;
+  return candidates.filter((c) => c.embedding?.length && c.id !== options.excludeId && (!options.category || c.category === options.category)).map((c) => ({ item: c, similarity: cosine(vector, c.embedding) ?? 0 })).filter((s) => s.similarity >= threshold).sort((a, b) => b.similarity - a.similarity).slice(0, options.limit ?? 3);
+}
+function kmeans(vectors, k, iterations = 15) {
+  const n = vectors.length;
+  if (n === 0 || k <= 0) return [];
+  const clusters = Math.min(k, n);
+  const centroids = [vectors[0]];
+  while (centroids.length < clusters) {
+    let bestIndex = 0;
+    let bestDistance = -1;
+    for (let i = 0; i < n; i++) {
+      const nearest = Math.max(...centroids.map((c) => cosine(vectors[i], c) ?? -1));
+      const distance = 1 - nearest;
+      if (distance > bestDistance) {
+        bestDistance = distance;
+        bestIndex = i;
       }
-      await new Promise((r) => setTimeout(r, 1200));
     }
-    sendEvent({ type: "done", enriched, failed, message: `${enriched} \xF6\u011Fe tamamland\u0131, ${failed} ba\u015Far\u0131s\u0131z.` });
-    res.end();
-  } catch (err) {
-    console.error("[Enrich] Hata:", err);
-    res.status(500).json({ error: "Zenginle\u015Ftirme ba\u015Far\u0131s\u0131z" });
+    centroids.push(vectors[bestIndex]);
   }
-});
-app.post("/api/analyze-image-base64", authenticateToken, rateLimit("analyze", RATE_LIMITS.analyzeImage, byUser), async (req, res) => {
-  try {
-    const { base64, mimeType } = req.body;
-    if (!base64 || !mimeType) return res.status(400).json({ error: "base64 ve mimeType gerekli" });
-    const { analysis, model } = await analyzeClothingImage(base64, mimeType);
-    res.json({ success: true, analysis, ...analysis, model });
-  } catch (err) {
-    console.error("[Vision Base64] Hata:", err);
-    res.status(err?.status || 500).json({ error: "Analiz hatas\u0131", details: err instanceof Error ? err.message : "Unknown" });
-  }
-});
-app.get("/api/capsule-analysis", authenticateToken, rateLimit("capsule", RATE_LIMITS.capsuleAnalysis, byUser), async (req, res) => {
-  try {
-    const targetCategory = req.query.category || "any";
-    const docs = await ItemModel.find({ userId: req.user.id });
-    if (docs.length < 5) {
-      return res.json({
-        insufficient: true,
-        message: "Kaps\xFCl gard\u0131rop sim\xFClasyonu yapabilmek i\xE7in dolab\u0131nda en az 5 adet k\u0131yafet bulunmal\u0131d\u0131r. L\xFCtfen biraz daha k\u0131yafet ekle!"
+  let assignment = new Array(n).fill(0);
+  for (let iter = 0; iter < iterations; iter++) {
+    const next = vectors.map((v) => {
+      let best = 0;
+      let bestSim = -Infinity;
+      centroids.forEach((c, idx) => {
+        const sim = cosine(v, c) ?? -1;
+        if (sim > bestSim) {
+          bestSim = sim;
+          best = idx;
+        }
       });
-    }
-    const items = docs.map(toEngineItem);
-    const result = await analyzeCapsule(items, targetCategory);
-    res.json(result);
-  } catch (err) {
-    console.error("[Server] Capsule Analysis Error:", err);
-    res.status(500).json({ error: "Kaps\xFCl gard\u0131rop analizi olu\u015Fturulamad\u0131", details: err instanceof Error ? err.message : "Unknown" });
-  }
-});
-app.post("/api/generate-outfit", authenticateToken, rateLimit("generate", RATE_LIMITS.generateOutfit, byUser), async (req, res) => {
-  try {
-    const rawRequest = req.body.request || req.body;
-    const user = await UserModel.findOne({ _id: req.user.id });
-    if (!user) return res.status(404).json({ error: "Kullan\u0131c\u0131 bulunamad\u0131" });
-    const result = await generateOutfitsForUser(user, rawRequest, { mode: "full" });
-    res.json(result);
-  } catch (err) {
-    console.error("[Server] Generate Outfit Error:", err);
-    const status = err?.status || (err?.message?.includes("gard\u0131robuna") ? 422 : 500);
-    res.status(status).json({
-      error: err?.message || "Kombin olu\u015Fturulamad\u0131",
-      details: err instanceof Error ? err.message : "Unknown"
+      return best;
     });
-  }
-});
-app.post("/api/feedback", authenticateToken, async (req, res) => {
-  try {
-    const { type, generationId, itemIds, itemId, reason, note, context } = req.body;
-    if (!type) return res.status(400).json({ error: "type gerekli" });
-    const user = await UserModel.findOne({ _id: req.user.id });
-    if (!user) return res.status(404).json({ error: "Kullan\u0131c\u0131 bulunamad\u0131" });
-    const event = new FeedbackEventModel({
-      userId: req.user.id,
-      type,
-      generationId,
-      itemIds,
-      itemId,
-      reason,
-      note,
-      context,
-      createdAt: /* @__PURE__ */ new Date()
-    });
-    await event.save();
-    if (type === "worn" && Array.isArray(itemIds) && itemIds.length > 0) {
-      const todayStr = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
-      const wearLog = new WearLogModel({
-        userId: req.user.id,
-        date: todayStr,
-        itemIds,
-        source: "suggestion",
-        createdAt: /* @__PURE__ */ new Date()
-      });
-      await wearLog.save();
-      await ItemModel.updateMany(
-        { id: { $in: itemIds }, userId: req.user.id },
-        { $inc: { wearCount: 1 }, $set: { lastWornAt: /* @__PURE__ */ new Date() } }
-      );
+    const changed = next.some((c, i) => c !== assignment[i]);
+    assignment = next;
+    for (let c = 0; c < clusters; c++) {
+      const members = vectors.filter((_, i) => assignment[i] === c);
+      if (members.length === 0) continue;
+      const sum = new Array(members[0].length).fill(0);
+      for (const m of members) for (let d = 0; d < m.length; d++) sum[d] += m[d];
+      const norm = Math.sqrt(sum.reduce((s, v) => s + v * v, 0)) || 1;
+      centroids[c] = sum.map((v) => v / norm);
     }
-    res.json({ success: true, eventId: event._id });
-  } catch (err) {
-    console.error("[Feedback] Hata:", err);
-    res.status(500).json({ error: "Geri bildirim kaydedilemedi" });
+    if (!changed && iter > 0) break;
   }
-});
-app.post("/api/auth/consents", authenticateToken, async (req, res) => {
-  try {
-    const { personalization } = req.body;
-    const update = {
-      "consents.updatedAt": /* @__PURE__ */ new Date()
-    };
-    if (personalization !== void 0) {
-      update["consents.personalization"] = {
-        granted: Boolean(personalization),
-        at: /* @__PURE__ */ new Date()
-      };
-    }
-    const updatedUser = await UserModel.findOneAndUpdate(
-      { _id: req.user.id },
-      { $set: update },
-      { returnDocument: "after" }
-    );
-    res.json({ success: true, consents: updatedUser?.consents });
-  } catch (err) {
-    console.error("[Consents] Hata:", err);
-    res.status(500).json({ error: "R\u0131za ayarlar\u0131 kaydedilemedi" });
-  }
-});
-app.post("/api/wardrobe/upload", authenticateToken, rateLimit("upload", RATE_LIMITS.upload, byUser), upload.single("image"), async (req, res) => {
-  try {
-    const file = req.file;
-    if (!file) return res.status(400).json({ error: "Dosya eksik" });
-    const rawUrl = file.path;
-    const imagePath = rawUrl.replace("/upload/", "/upload/f_auto,q_auto,w_1200/");
-    const itemData = JSON.parse(req.body.itemData || "{}");
-    const autoAnalyze = req.body.autoAnalyze === "true" || !itemData.category;
-    let analysis = null;
-    if (autoAnalyze) {
-      console.log("[Upload] Gemini Vision analizi ba\u015Fl\u0131yor...");
-      analysis = await analyzeImageUrl(imagePath);
-    }
-    const newItem = new ItemModel({
-      id: `item_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      userId: req.user.id,
-      // Eklendi!
-      name: itemData.name || analysis?.name || file.originalname,
-      category: itemData.category || analysis?.category || "top",
-      subCategory: itemData.subCategory || analysis?.subCategory || "",
-      color: itemData.color || analysis?.color || "",
-      material: itemData.material || analysis?.material || "",
-      style: itemData.style || analysis?.style || "",
-      pattern: itemData.pattern || analysis?.pattern || "",
-      fit: itemData.fit || analysis?.fit || "",
-      weatherMatch: itemData.weatherMatch || analysis?.weatherMatch || ["sunny", "cloudy"],
-      imagePath,
-      attributes: itemData.attributes || {},
-      aiAnalyzed: !!analysis
-    });
-    await newItem.save();
-    console.log(`[Upload] \u2713 ${newItem.name} (${newItem.category}) eklendi.`);
-    res.json({ success: true, item: newItem });
-  } catch (err) {
-    console.error("[Upload] Hata:", err);
-    res.status(500).json({ error: "Y\xFCkleme ba\u015Far\u0131s\u0131z", details: err instanceof Error ? err.message : "Unknown" });
-  }
-});
-app.delete("/api/wardrobe/:id", authenticateToken, async (req, res) => {
-  try {
-    const item = await ItemModel.findOne({ id: req.params.id, userId: req.user.id });
-    if (!item) {
-      return res.status(404).json({ error: "\xD6\u011Fe bulunamad\u0131" });
-    }
-    const publicId = getOwnedPublicId(item.imagePath, req.user.id);
-    if (publicId) {
-      console.log(`[Cloudinary] G\xF6rsel siliniyor: ${publicId}`);
-      await cloudinary.uploader.destroy(publicId);
-    }
-    await ItemModel.deleteOne({ id: req.params.id, userId: req.user.id });
-    res.json({ success: true });
-  } catch (err) {
-    console.error("[Delete] Hata:", err);
-    res.status(500).json({ error: "Silme ba\u015Far\u0131s\u0131z" });
-  }
-});
+  return assignment;
+}
+
+// backend/itemFields.ts
 function pickStringFields(body, fields, update) {
   for (const [field, maxLength] of Object.entries(fields)) {
     const value = body?.[field];
@@ -7016,21 +7166,61 @@ function pickStringFields(body, fields, update) {
 function isStringArray(value, maxItems, maxLength) {
   return Array.isArray(value) && value.length <= maxItems && value.every((v) => typeof v === "string" && v.length <= maxLength);
 }
+var oneOf = (options, value) => typeof value === "string" && options.includes(value);
+var EMBEDDING_FIELDS = ["category", "subCategory", "color", "colorFamily", "material", "pattern", "fit", "style", "formality", "warmth"];
 function pickItemUpdate(body) {
   const update = {};
-  const error = pickStringFields(body, {
-    name: 200,
-    category: 50,
-    subCategory: 100,
-    color: 100,
-    material: 100,
-    style: 50,
-    pattern: 100,
-    fit: 50
-  }, update);
+  const error = pickStringFields(body, { name: 200, subCategory: 100, color: 100, material: 100 }, update);
   if (error) return { error };
+  const enums = [
+    ["category", CATEGORIES],
+    ["style", STYLES],
+    ["pattern", PATTERNS],
+    ["fit", FITS],
+    ["layerRole", LAYER_ROLES]
+  ];
+  for (const [field, options] of enums) {
+    const value = body?.[field];
+    if (value === void 0 || value === null) continue;
+    if (value === "" && (field === "pattern" || field === "fit")) {
+      update[field] = "";
+      continue;
+    }
+    if (!oneOf(options, value)) return { error: `Ge\xE7ersiz alan: ${field}` };
+    update[field] = value;
+  }
+  if (body?.colorFamily !== void 0 && body?.colorFamily !== null) {
+    if (!oneOf(COLOR_FAMILIES, body.colorFamily)) return { error: "Ge\xE7ersiz alan: colorFamily" };
+    update.colorFamily = body.colorFamily;
+  }
+  if (body?.colorHex !== void 0) {
+    if (body.colorHex !== null && body.colorHex !== "" && !isValidHex(body.colorHex)) return { error: "Ge\xE7ersiz alan: colorHex" };
+    update.colorHex = body.colorHex || null;
+  }
+  for (const field of ["formality", "warmth"]) {
+    const value = body?.[field];
+    if (value === void 0 || value === null) continue;
+    if (!Number.isInteger(value) || value < 1 || value > 5) return { error: `Ge\xE7ersiz alan: ${field}` };
+    update[field] = value;
+  }
+  if (body?.waterResistant !== void 0 && body?.waterResistant !== null) {
+    if (typeof body.waterResistant !== "boolean") return { error: "Ge\xE7ersiz alan: waterResistant" };
+    update.waterResistant = body.waterResistant;
+  }
+  if (body?.price !== void 0) {
+    if (body.price !== null && (typeof body.price !== "number" || !Number.isFinite(body.price) || body.price < 0 || body.price > 1e6)) {
+      return { error: "Ge\xE7ersiz alan: price" };
+    }
+    update.price = body.price;
+  }
+  for (const [field, options, max] of [["seasons", SEASONS, 4], ["secondaryColors", COLOR_FAMILIES, 3]]) {
+    const value = body?.[field];
+    if (value === void 0 || value === null) continue;
+    if (!Array.isArray(value) || value.length > max || !value.every((v) => oneOf(options, v))) return { error: `Ge\xE7ersiz alan: ${field}` };
+    update[field] = Array.from(new Set(value));
+  }
   if (body?.weatherMatch !== void 0 && body?.weatherMatch !== null) {
-    if (!isStringArray(body.weatherMatch, 10, 30)) return { error: "Ge\xE7ersiz alan: weatherMatch" };
+    if (!isStringArray(body.weatherMatch, 10, 30) || !body.weatherMatch.every((w) => oneOf(WEATHERS, w))) return { error: "Ge\xE7ersiz alan: weatherMatch" };
     update.weatherMatch = body.weatherMatch;
   }
   return { update };
@@ -7045,70 +7235,1265 @@ function pickOutfitUpdate(body) {
   }
   return { update };
 }
-app.put("/api/wardrobe/:id", authenticateToken, async (req, res) => {
-  try {
-    const picked = pickItemUpdate(req.body);
-    if ("error" in picked) return res.status(400).json({ error: picked.error });
-    const updated = await ItemModel.findOneAndUpdate(
-      { id: req.params.id, userId: req.user.id },
-      { $set: picked.update },
-      { returnDocument: "after" }
+function pickNewOutfit(body) {
+  const picked = pickOutfitUpdate(body);
+  if ("error" in picked) return picked;
+  const items = picked.update.items;
+  if (!items || items.length === 0) return { error: "Kombinde en az bir par\xE7a olmal\u0131." };
+  const score = body?.compatibilityScore;
+  if (score !== void 0 && score !== null && (typeof score !== "number" || score < 0 || score > 100)) {
+    return { error: "Ge\xE7ersiz alan: compatibilityScore" };
+  }
+  const source = ["ai", "manual", "daily", "trip"].includes(body?.source) ? body.source : "ai";
+  return {
+    outfit: {
+      name: picked.update.name || "Yeni Kombin",
+      items,
+      stylingReason: picked.update.stylingReason || "",
+      compatibilityScore: typeof score === "number" ? Math.round(score) : 0,
+      source
+    }
+  };
+}
+function invalidatesEmbedding(update) {
+  return EMBEDDING_FIELDS.some((field) => field in update);
+}
+function withDerivedWeatherMatch(current, update) {
+  if ("weatherMatch" in update) return update;
+  if (!["warmth", "waterResistant", "seasons", "category"].some((f) => f in update)) return update;
+  return { ...update, weatherMatch: deriveWeatherMatch({ ...current, ...update }) };
+}
+
+// shared/api.ts
+var FEEDBACK_TYPES = ["saved", "replaced", "rerolled", "worn", "liked", "disliked"];
+
+// backend/wearLog.ts
+var WEAR_LOG_MAX_AGE_DAYS = 365;
+function toWearLogEntry(doc) {
+  return {
+    id: doc._id.toString(),
+    date: doc.date,
+    itemIds: doc.itemIds || [],
+    outfitId: doc.outfitId || null,
+    source: doc.source || "manual",
+    note: doc.note || null,
+    createdAt: new Date(doc.createdAt).toISOString()
+  };
+}
+function sanitizeWearInput(raw, today = localDate()) {
+  const date = raw?.date === void 0 || raw?.date === "" ? today : raw.date;
+  if (!isValidLocalDate(date)) throw new RequestError("Tarih YYYY-AA-GG bi\xE7iminde olmal\u0131.");
+  const age = daysBetween(date, today);
+  if (age < 0) throw new RequestError("\u0130leri bir tarih i\xE7in giyim kayd\u0131 eklenemez.");
+  if (age > WEAR_LOG_MAX_AGE_DAYS) throw new RequestError("En fazla 1 y\u0131l \xF6ncesine kay\u0131t eklenebilir.");
+  if (!Array.isArray(raw?.itemIds) || raw.itemIds.length === 0 || raw.itemIds.length > 12 || raw.itemIds.some((id) => typeof id !== "string" || id.length > 100)) {
+    throw new RequestError("Giyilen par\xE7alar\u0131 se\xE7 (en fazla 12).");
+  }
+  const outfitId2 = typeof raw?.outfitId === "string" && raw.outfitId.length <= 100 ? raw.outfitId : void 0;
+  const note = typeof raw?.note === "string" && raw.note.trim() ? raw.note.trim().slice(0, 300) : void 0;
+  const source = raw?.source === "saved" ? "saved" : "manual";
+  return { date, itemIds: Array.from(new Set(raw.itemIds)), outfitId: outfitId2, source, note };
+}
+var dateToInstant = (date) => /* @__PURE__ */ new Date(`${date}T12:00:00Z`);
+async function recordWear(userId, input) {
+  const owned = await ItemModel.find({ userId, id: { $in: input.itemIds } }).select("id").lean();
+  const ownedIds = new Set(owned.map((i) => i.id));
+  const itemIds = input.itemIds.filter((id) => ownedIds.has(id));
+  if (itemIds.length === 0) throw new RequestError("Se\xE7ilen par\xE7alar gard\u0131robunda bulunamad\u0131.", 404);
+  const sorted = [...itemIds].sort();
+  const sameDay = await WearLogModel.find({ userId, date: input.date }).lean();
+  const duplicate = sameDay.find((log2) => {
+    const ids = [...log2.itemIds || []].sort();
+    return ids.length === sorted.length && ids.every((id, i) => id === sorted[i]);
+  });
+  if (duplicate) return toWearLogEntry(duplicate);
+  const log = await WearLogModel.create({
+    userId,
+    date: input.date,
+    itemIds,
+    outfitId: input.outfitId,
+    source: input.source,
+    note: input.note
+  });
+  const wornAt = dateToInstant(input.date);
+  await ItemModel.updateMany({ userId, id: { $in: itemIds } }, { $inc: { wearCount: 1 } });
+  await ItemModel.updateMany(
+    { userId, id: { $in: itemIds }, $or: [{ lastWornAt: { $exists: false } }, { lastWornAt: null }, { lastWornAt: { $lt: wornAt } }] },
+    { $set: { lastWornAt: wornAt } }
+  );
+  return toWearLogEntry(log);
+}
+async function deleteWear(userId, logId) {
+  if (!/^[a-f0-9]{24}$/i.test(logId)) return false;
+  const log = await WearLogModel.findOneAndDelete({ _id: logId, userId }).lean();
+  if (!log) return false;
+  const itemIds = log.itemIds || [];
+  await ItemModel.updateMany({ userId, id: { $in: itemIds }, wearCount: { $gt: 0 } }, { $inc: { wearCount: -1 } });
+  for (const id of itemIds) {
+    const latest = await WearLogModel.findOne({ userId, itemIds: id }).sort({ date: -1 }).select("date").lean();
+    await ItemModel.updateOne(
+      { userId, id },
+      latest ? { $set: { lastWornAt: dateToInstant(latest.date) } } : { $unset: { lastWornAt: "" } }
     );
-    if (!updated) return res.status(404).json({ error: "Bulunamad\u0131" });
-    res.json({ success: true, item: updated });
-  } catch {
-    res.status(500).json({ error: "G\xFCncelleme ba\u015Far\u0131s\u0131z" });
   }
-});
-app.get("/api/outfits", authenticateToken, async (req, res) => {
-  try {
-    const outfits = await OutfitModel.find({ userId: req.user.id }).sort({ createdAt: -1 });
-    res.json({ outfits });
-  } catch (err) {
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-app.post("/api/outfits", authenticateToken, async (req, res) => {
-  try {
-    const newOutfit = new OutfitModel({
-      id: `outfit_${Date.now()}`,
-      userId: req.user.id,
-      // Eklendi!
-      name: req.body.name || "Yeni Kombin",
-      items: req.body.items || [],
-      stylingReason: req.body.stylingReason || "",
-      compatibilityScore: req.body.compatibilityScore || 0,
-      createdAt: /* @__PURE__ */ new Date()
+  return true;
+}
+async function listWear(userId, from, to) {
+  const logs = await WearLogModel.find({ userId, date: { $gte: from, $lte: to } }).sort({ date: -1, createdAt: -1 }).limit(400).lean();
+  return logs.map(toWearLogEntry);
+}
+function parseRange(query, today = localDate()) {
+  const to = isValidLocalDate(query?.to) ? query.to : today;
+  const from = isValidLocalDate(query?.from) ? query.from : addDays(to, -30);
+  if (from > to) throw new RequestError("Ba\u015Flang\u0131\xE7 tarihi biti\u015Ften sonra olamaz.");
+  if (daysBetween(from, to) > WEAR_LOG_MAX_AGE_DAYS) throw new RequestError("En fazla 1 y\u0131ll\u0131k aral\u0131k sorgulanabilir.");
+  return { from, to };
+}
+function toWornStat(item) {
+  const wearCount = typeof item.wearCount === "number" ? item.wearCount : 0;
+  const price = typeof item.price === "number" && item.price > 0 ? item.price : null;
+  return {
+    id: item.id,
+    name: item.name || "Par\xE7a",
+    category: item.category,
+    imagePath: item.cutoutImagePath || item.imagePath || "",
+    wearCount,
+    lastWornAt: item.lastWornAt ? new Date(item.lastWornAt).toISOString() : null,
+    price,
+    costPerWear: price === null ? null : Math.round(price / Math.max(1, wearCount) * 100) / 100
+  };
+}
+function mostCommon(values) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const v of values) if (v !== null && v !== void 0) counts.set(v, (counts.get(v) || 0) + 1);
+  return Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+}
+function styleClusters(items) {
+  const embedded = items.filter((i) => Array.isArray(i.embedding) && i.embedding.length > 0 && !["makeup"].includes(i.category));
+  if (embedded.length < 6) return [];
+  const k = Math.min(4, Math.floor(embedded.length / 3));
+  const assignment = kmeans(embedded.map((i) => i.embedding), k);
+  const clusters = [];
+  for (let c = 0; c < k; c++) {
+    const members = embedded.filter((_, i) => assignment[i] === c);
+    if (members.length === 0) continue;
+    const style = mostCommon(members.map((m) => m.style || "casual")) || "casual";
+    const colorFamily = mostCommon(members.map((m) => m.colorFamily || null));
+    const centroid = members[0].embedding.map((_, d) => members.reduce((s, m) => s + m.embedding[d], 0) / members.length);
+    const samples = [...members].sort((a, b) => (cosine(b.embedding, centroid) ?? 0) - (cosine(a.embedding, centroid) ?? 0)).slice(0, 3).map((m) => ({ id: m.id, name: m.name || "Par\xE7a", imagePath: m.cutoutImagePath || m.imagePath || "" }));
+    clusters.push({
+      label: `${STYLE_LABELS[style] || style}${colorFamily ? ` \xB7 ${colorFamily}` : ""}`,
+      size: members.length,
+      style,
+      colorFamily,
+      sampleItems: samples
     });
-    await newOutfit.save();
-    res.json({ success: true, outfit: newOutfit });
-  } catch {
-    res.status(500).json({ error: "Kombin kaydetme ba\u015Far\u0131s\u0131z" });
   }
-});
-app.delete("/api/outfits/:id", authenticateToken, async (req, res) => {
+  return clusters.sort((a, b) => b.size - a.size);
+}
+function computeWardrobeStats(items, logs, today = localDate()) {
+  const wearable = items.filter((i) => i.category !== "makeup");
+  const stats = wearable.map(toWornStat);
+  const byWear = [...stats].sort((a, b) => b.wearCount - a.wearCount || a.name.localeCompare(b.name, "tr"));
+  const worn = byWear.filter((s) => s.wearCount > 0);
+  const never = stats.filter((s) => s.wearCount === 0);
+  const cutoff = addDays(today, -90);
+  const stale = stats.filter((s) => s.wearCount > 0 && s.lastWornAt && s.lastWornAt.slice(0, 10) < cutoff).sort((a, b) => a.lastWornAt < b.lastWornAt ? -1 : 1);
+  const priced = stats.filter((s) => s.price !== null);
+  return {
+    totalItems: items.length,
+    totalWears: stats.reduce((sum, s) => sum + s.wearCount, 0),
+    wearsLast30Days: logs.filter((l) => daysBetween(l.date, today) >= 0 && daysBetween(l.date, today) < 30).length,
+    mostWorn: worn.slice(0, 5),
+    leastWorn: [...worn].reverse().slice(0, 5),
+    neverWorn: never.slice(0, 12),
+    neverWornCount: never.length,
+    notWornIn90Days: stale.slice(0, 12),
+    costPerWear: [...priced].sort((a, b) => (b.costPerWear ?? 0) - (a.costPerWear ?? 0)).slice(0, 10),
+    wardrobeValue: priced.length ? Math.round(priced.reduce((sum, s) => sum + (s.price ?? 0), 0)) : null,
+    styleClusters: styleClusters(items),
+    embeddedItems: items.filter((i) => Array.isArray(i.embedding) && i.embedding.length > 0).length
+  };
+}
+
+// backend/feedback.ts
+var ID_PATTERN = /^[\w.:-]{1,100}$/;
+var TEMP_BANDS = ["freezing", "cold", "cool", "mild", "warm", "hot"];
+var OUTERWEAR = ["required", "recommended", "optional", "avoid"];
+var PRECIPITATION = ["none", "rain", "snow"];
+var inRange = (v, min, max) => typeof v === "number" && Number.isFinite(v) && v >= min && v <= max;
+function sanitizeContextSummary(raw) {
+  if (!raw || typeof raw !== "object") return void 0;
+  const r = raw;
+  if (typeof r.event !== "string" || !inRange(r.formalityMin, 1, 5) || !inRange(r.formalityMax, 1, 5) || !inRange(r.formalityTarget, 1, 5) || !inRange(r.activity, 1, 5)) return void 0;
+  return {
+    event: r.event.slice(0, 60),
+    formalityMin: r.formalityMin,
+    formalityMax: r.formalityMax,
+    formalityTarget: r.formalityTarget,
+    activity: r.activity,
+    tempBand: TEMP_BANDS.includes(r.tempBand) ? r.tempBand : null,
+    precipitation: PRECIPITATION.includes(r.precipitation) ? r.precipitation : "none",
+    outerwear: OUTERWEAR.includes(r.outerwear) ? r.outerwear : "optional",
+    needsWaterResistant: r.needsWaterResistant === true,
+    season: typeof r.season === "string" ? r.season.slice(0, 20) : "",
+    feelsLikeC: inRange(r.feelsLikeC, -60, 60) ? r.feelsLikeC : null,
+    indoor: r.indoor === true
+  };
+}
+function sanitizeFeedback(raw) {
+  if (!raw || typeof raw !== "object") throw new RequestError("Geri bildirim eksik.");
+  const r = raw;
+  if (!FEEDBACK_TYPES.includes(r.type)) throw new RequestError("Ge\xE7ersiz geri bildirim t\xFCr\xFC.");
+  const type = r.type;
+  if (r.itemIds !== void 0 && !Array.isArray(r.itemIds)) throw new RequestError("itemIds bir liste olmal\u0131.");
+  const rawIds = r.itemIds || [];
+  if (rawIds.length > 12 || rawIds.some((id) => typeof id !== "string" || !ID_PATTERN.test(id))) {
+    throw new RequestError("Ge\xE7ersiz par\xE7a listesi.");
+  }
+  const itemIds = Array.from(new Set(rawIds));
+  let itemId;
+  if (r.itemId !== void 0 && r.itemId !== null) {
+    if (typeof r.itemId !== "string" || !ID_PATTERN.test(r.itemId)) throw new RequestError("Ge\xE7ersiz par\xE7a kimli\u011Fi.");
+    itemId = r.itemId;
+  }
+  if (type === "replaced" && !itemId) throw new RequestError("De\u011Fi\u015Ftirilen par\xE7a belirtilmeli.");
+  if (type !== "replaced" && type !== "rerolled" && itemIds.length === 0) throw new RequestError("Kombin par\xE7alar\u0131 belirtilmeli.");
+  let reason;
+  if (r.reason !== void 0 && r.reason !== null && r.reason !== "") {
+    if (!FEEDBACK_REASONS.some((x) => x.value === r.reason)) throw new RequestError("Ge\xE7ersiz geri bildirim nedeni.");
+    reason = r.reason;
+  }
+  let generationId;
+  if (r.generationId !== void 0 && r.generationId !== null) {
+    if (typeof r.generationId !== "string" || !ID_PATTERN.test(r.generationId)) throw new RequestError("Ge\xE7ersiz \xF6neri kimli\u011Fi.");
+    generationId = r.generationId;
+  }
+  const note = typeof r.note === "string" && r.note.trim() ? r.note.trim().slice(0, 300) : void 0;
+  return { type, generationId, itemIds, itemId, reason, note, context: sanitizeContextSummary(r.context) };
+}
+async function handleFeedback(user, feedback) {
+  let wearLogId = null;
+  if (feedback.type === "worn") {
+    const log = await recordWear(user._id, {
+      date: localDate(),
+      itemIds: feedback.itemIds,
+      outfitId: feedback.generationId,
+      source: "suggestion"
+    });
+    wearLogId = log.id;
+  }
+  const { stored } = await recordFeedback(user, feedback);
+  return { stored, wearLogId };
+}
+
+// backend/routes/wardrobe.ts
+var newItemId = () => `item_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+var ITEM_ID = /^[\w.:-]{1,100}$/;
+function toSimilarDTO(similar) {
+  return similar.map((s) => ({
+    id: s.item.id,
+    name: s.item.name,
+    imagePath: s.item.cutoutImagePath || s.item.imagePath,
+    similarity: Math.round(s.similarity * 100) / 100
+  }));
+}
+function wardrobeRoutes({ uploadMiddleware }) {
+  const router = express3.Router();
+  router.get("/api/wardrobe", authenticateToken, async (req, res) => {
+    try {
+      if (typeof req.query.ids === "string") {
+        const ids = req.query.ids.split(",").filter((id) => ITEM_ID.test(id)).slice(0, 200);
+        const items2 = ids.length ? await ItemModel.find({ userId: req.user.id, id: { $in: ids } }).lean() : [];
+        return res.json({ items: items2.map(toItemDTO) });
+      }
+      const page = Math.max(1, parseInt(req.query.page) || 1);
+      const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 50));
+      const skip = (page - 1) * limit;
+      const [total, items] = await Promise.all([
+        ItemModel.countDocuments({ userId: req.user.id }),
+        ItemModel.find({ userId: req.user.id }).skip(skip).limit(limit).sort({ _id: -1 }).lean()
+      ]);
+      res.json({ items: items.map(toItemDTO), total, page, totalPages: Math.ceil(total / limit), hasMore: page * limit < total });
+    } catch (err) {
+      sendError(res, err, "Gard\u0131rop al\u0131namad\u0131.", "Wardrobe");
+    }
+  });
+  router.post("/api/wardrobe/scan", authenticateToken, async (_req, res) => {
+    res.json({ success: true, added: 0, message: "Tarama art\u0131k desteklenmiyor (Bulut tabanl\u0131)" });
+  });
+  router.post("/api/wardrobe/enrich", authenticateToken, rateLimit("enrich", RATE_LIMITS.enrich, byUser), async (req, res) => {
+    try {
+      const items = await ItemModel.find({ userId: req.user.id });
+      const targets = items.filter(itemNeedsEnrichment);
+      if (targets.length === 0) {
+        return res.json({ success: true, enriched: 0, message: "T\xFCm \xF6\u011Feler zaten eksiksiz." });
+      }
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      const sendEvent = (data) => res.write(`data: ${JSON.stringify(data)}
+
+`);
+      sendEvent({ type: "start", total: targets.length });
+      let enriched = 0;
+      let failed = 0;
+      for (const item of targets) {
+        sendEvent({ type: "progress", current: enriched + failed + 1, total: targets.length, name: item.name });
+        try {
+          const downloaded = item.imagePath ? await downloadOwnImage(item.imagePath) : null;
+          if (downloaded) {
+            const { analysis } = await analyzeClothingImage(downloaded.base64, downloaded.mimeType);
+            applyAnalysisToItem(item, analysis);
+            item.enrichAttemptedAt = /* @__PURE__ */ new Date();
+            item.embedding = void 0;
+            item.embeddingModel = void 0;
+            await item.save();
+            enriched++;
+            sendEvent({ type: "item_done", id: item.id, name: item.name, category: item.category, color: item.color });
+          } else {
+            item.enrichAttemptedAt = /* @__PURE__ */ new Date();
+            await item.save();
+            failed++;
+          }
+        } catch {
+          failed++;
+        }
+        await new Promise((r) => setTimeout(r, 1200));
+      }
+      sendEvent({ type: "done", enriched, failed, message: `${enriched} \xF6\u011Fe tamamland\u0131, ${failed} ba\u015Far\u0131s\u0131z.` });
+      res.end();
+    } catch (err) {
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
+      sendError(res, err, "Zenginle\u015Ftirme ba\u015Far\u0131s\u0131z", "Enrich");
+    }
+  });
+  router.post("/api/analyze-image-base64", authenticateToken, rateLimit("analyze", RATE_LIMITS.analyzeImage, byUser), async (req, res) => {
+    try {
+      const { base64, mimeType } = req.body || {};
+      if (typeof base64 !== "string" || typeof mimeType !== "string" || !/^image\/(jpeg|png|webp|heic|heif)$/.test(mimeType)) {
+        return res.status(400).json({ error: "base64 ve ge\xE7erli bir mimeType gerekli" });
+      }
+      const { analysis, model } = await analyzeClothingImage(base64, mimeType);
+      res.json({ success: true, analysis, ...analysis, model });
+    } catch (err) {
+      sendError(res, err, "Analiz hatas\u0131", "Vision Base64");
+    }
+  });
+  router.get("/api/capsule-analysis", authenticateToken, rateLimit("capsule", RATE_LIMITS.capsuleAnalysis, byUser), async (req, res) => {
+    try {
+      const requested = String(req.query.category || "any");
+      if (!CAPSULE_TARGETS.includes(requested)) {
+        return res.status(400).json({ error: "Ge\xE7ersiz kategori." });
+      }
+      const docs = await ItemModel.find({ userId: req.user.id }).lean();
+      if (docs.length < 5) {
+        return res.json({
+          insufficient: true,
+          message: "Kaps\xFCl gard\u0131rop sim\xFClasyonu yapabilmek i\xE7in dolab\u0131nda en az 5 adet k\u0131yafet bulunmal\u0131d\u0131r. L\xFCtfen biraz daha k\u0131yafet ekle!"
+        });
+      }
+      res.json(await analyzeCapsule(docs, requested));
+    } catch (err) {
+      sendError(res, err, "Kaps\xFCl gard\u0131rop analizi olu\u015Fturulamad\u0131", "Capsule");
+    }
+  });
+  router.post("/api/generate-outfit", authenticateToken, rateLimit("generate", RATE_LIMITS.generateOutfit, byUser), async (req, res) => {
+    try {
+      const rawRequest = req.body?.request || req.body;
+      const user = await UserModel.findOne({ _id: req.user.id });
+      if (!user) return res.status(404).json({ error: "Kullan\u0131c\u0131 bulunamad\u0131" });
+      res.json(await generateOutfitsForUser(user, rawRequest, { mode: "full" }));
+    } catch (err) {
+      sendError(res, err, "Kombin olu\u015Fturulamad\u0131", "Generate Outfit");
+    }
+  });
+  router.post("/api/wardrobe/upload", authenticateToken, rateLimit("upload", RATE_LIMITS.upload, byUser), uploadMiddleware, async (req, res) => {
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: "Dosya eksik" });
+    const rawUrl = file.path;
+    const removeUpload = async () => {
+      const publicId = getOwnedPublicId(rawUrl, req.user.id);
+      if (publicId) await deleteImages([publicId]);
+    };
+    try {
+      let itemData = {};
+      try {
+        itemData = JSON.parse(req.body?.itemData || "{}");
+      } catch {
+        await removeUpload();
+        return res.status(400).json({ error: "Par\xE7a bilgileri okunamad\u0131." });
+      }
+      const picked = pickItemUpdate(itemData);
+      if ("error" in picked) {
+        await removeUpload();
+        return res.status(400).json({ error: picked.error });
+      }
+      const imagePath = rawUrl.replace("/upload/", "/upload/f_auto,q_auto,w_1200/");
+      const autoAnalyze = req.body?.autoAnalyze === "true" || !picked.update.category;
+      const warnings = [];
+      const image = await downloadOwnImage(withTransformation(imagePath, "f_jpg,q_auto,w_768"));
+      const doc = new ItemModel({
+        id: newItemId(),
+        userId: req.user.id,
+        attributes: {},
+        ...picked.update,
+        imagePath
+      });
+      if (autoAnalyze && image) {
+        try {
+          const { analysis } = await analyzeClothingImage(image.base64, image.mimeType);
+          applyAnalysisToItem(doc, analysis);
+          if (!analysis.isClothing) warnings.push("Foto\u011Frafta bir k\u0131yafet tespit edilemedi; bilgileri kontrol et.");
+        } catch (err) {
+          warnings.push("Otomatik analiz yap\u0131lamad\u0131; bilgileri elle tamamlayabilirsin.");
+          console.warn("[Upload] Analiz ba\u015Far\u0131s\u0131z:", err?.message);
+        }
+      }
+      if (!doc.name) doc.name = String(file.originalname || "Yeni par\xE7a").replace(/\.[^.]+$/, "").slice(0, 80);
+      if (!doc.category) doc.category = "top";
+      if (!doc.weatherMatch?.length) doc.weatherMatch = deriveWeatherMatch(doc);
+      let similarItems = [];
+      const vector = image ? await computeItemEmbedding(doc, { base64: image.base64, mimeType: image.mimeType }) : null;
+      if (vector) {
+        applyEmbedding(doc, vector);
+        const existing = await ItemModel.find({ userId: req.user.id, category: doc.category }).select("+embedding id name imagePath cutoutImagePath category").lean();
+        similarItems = toSimilarDTO(findSimilarItems(vector, existing, { category: doc.category }));
+      }
+      await doc.save();
+      res.json({ success: true, item: toItemDTO(doc), similarItems, warnings });
+    } catch (err) {
+      await removeUpload().catch(() => void 0);
+      sendError(res, err, "Y\xFCkleme ba\u015Far\u0131s\u0131z", "Upload");
+    }
+  });
+  router.delete("/api/wardrobe/:id", authenticateToken, async (req, res) => {
+    try {
+      const item = await ItemModel.findOne({ id: req.params.id, userId: req.user.id });
+      if (!item) return res.status(404).json({ error: "\xD6\u011Fe bulunamad\u0131" });
+      const publicIds = [getOwnedPublicId(item.imagePath, req.user.id), getOwnedPublicId(item.cutoutImagePath, req.user.id)].filter(Boolean);
+      await deleteImages(publicIds);
+      await ItemModel.deleteOne({ id: req.params.id, userId: req.user.id });
+      await OutfitModel.updateMany({ userId: req.user.id }, { $pull: { items: req.params.id } });
+      res.json({ success: true });
+    } catch (err) {
+      sendError(res, err, "Silme ba\u015Far\u0131s\u0131z", "Delete");
+    }
+  });
+  router.put("/api/wardrobe/:id", authenticateToken, async (req, res) => {
+    try {
+      const picked = pickItemUpdate(req.body);
+      if ("error" in picked) return res.status(400).json({ error: picked.error });
+      const current = await ItemModel.findOne({ id: req.params.id, userId: req.user.id }).lean();
+      if (!current) return res.status(404).json({ error: "Bulunamad\u0131" });
+      const update = withDerivedWeatherMatch(current, picked.update);
+      const operation = { $set: update };
+      if (invalidatesEmbedding(update)) operation.$unset = { embedding: "", embeddingModel: "" };
+      const updated = await ItemModel.findOneAndUpdate({ id: req.params.id, userId: req.user.id }, operation, { returnDocument: "after" }).lean();
+      res.json({ success: true, item: toItemDTO(updated) });
+    } catch (err) {
+      sendError(res, err, "G\xFCncelleme ba\u015Far\u0131s\u0131z", "Update Item");
+    }
+  });
+  router.post("/api/wardrobe/:id/cutout", authenticateToken, rateLimit("cutout", RATE_LIMITS.cutout, byUser), async (req, res) => {
+    try {
+      const item = await ItemModel.findOne({ id: req.params.id, userId: req.user.id });
+      if (!item) return res.status(404).json({ error: "\xD6\u011Fe bulunamad\u0131" });
+      if (!item.imagePath) return res.status(400).json({ error: "Par\xE7an\u0131n g\xF6rseli yok." });
+      item.cutoutImagePath = await createCutout(item, req.user.id);
+      await item.save();
+      res.json({ success: true, item: toItemDTO(item) });
+    } catch (err) {
+      sendError(res, err, "Arka plan kald\u0131r\u0131lamad\u0131.", "Cutout");
+    }
+  });
+  router.delete("/api/wardrobe/:id/cutout", authenticateToken, async (req, res) => {
+    try {
+      const item = await ItemModel.findOne({ id: req.params.id, userId: req.user.id });
+      if (!item) return res.status(404).json({ error: "\xD6\u011Fe bulunamad\u0131" });
+      const publicId = getOwnedPublicId(item.cutoutImagePath, req.user.id);
+      if (publicId) await deleteImages([publicId]);
+      item.cutoutImagePath = void 0;
+      await item.save();
+      res.json({ success: true, item: toItemDTO(item) });
+    } catch (err) {
+      sendError(res, err, "G\xF6rsel kald\u0131r\u0131lamad\u0131.", "Cutout Delete");
+    }
+  });
+  router.post("/api/wardrobe/:id/pairings", authenticateToken, rateLimit("pairings", RATE_LIMITS.pairings, byUser), async (req, res) => {
+    try {
+      if (!ITEM_ID.test(req.params.id)) return res.status(404).json({ error: "\xD6\u011Fe bulunamad\u0131" });
+      const [user, item] = await Promise.all([
+        UserModel.findOne({ _id: req.user.id }),
+        ItemModel.exists({ id: req.params.id, userId: req.user.id })
+      ]);
+      if (!user) return res.status(404).json({ error: "Kullan\u0131c\u0131 bulunamad\u0131" });
+      if (!item) return res.status(404).json({ error: "\xD6\u011Fe bulunamad\u0131" });
+      const body = req.body || {};
+      const request = { ...body, event: body.event || "G\xFCndelik", requiredItems: [req.params.id], lockedItems: [], excludedItems: [] };
+      res.json(await generateOutfitsForUser(user, request, { mode: "deterministic", picks: 3, useLastLocation: true }));
+    } catch (err) {
+      sendError(res, err, "Bu par\xE7a i\xE7in kombin bulunamad\u0131.", "Pairings");
+    }
+  });
+  router.get("/api/wardrobe/:id/similar", authenticateToken, async (req, res) => {
+    try {
+      const target = await ItemModel.findOne({ id: req.params.id, userId: req.user.id }).select("+embedding").lean();
+      if (!target) return res.status(404).json({ error: "\xD6\u011Fe bulunamad\u0131" });
+      if (!target.embedding?.length) return res.json({ similarItems: [], embedded: false });
+      const others = await ItemModel.find({ userId: req.user.id, category: target.category }).select("+embedding id name imagePath cutoutImagePath category").lean();
+      res.json({ embedded: true, similarItems: toSimilarDTO(findSimilarItems(target.embedding, others, { category: target.category, excludeId: target.id, threshold: 0.85 })) });
+    } catch (err) {
+      sendError(res, err, "Benzer par\xE7alar al\u0131namad\u0131.", "Similar");
+    }
+  });
+  router.post("/api/wardrobe/embeddings/backfill", authenticateToken, rateLimit("embeddings", RATE_LIMITS.embeddings, byUser), async (req, res) => {
+    try {
+      const filter = { userId: req.user.id, $or: [{ embedding: { $exists: false } }, { embeddingModel: { $ne: EMBEDDING_MODEL } }] };
+      const targets = await ItemModel.find(filter).select("+embedding +embeddingModel").limit(10);
+      const started = Date.now();
+      let computed = 0;
+      let failed = 0;
+      for (const item of targets) {
+        if (Date.now() - started > 4e4) break;
+        const vector = await computeItemEmbedding(item);
+        if (vector) {
+          applyEmbedding(item, vector);
+          await item.save();
+          computed++;
+        } else {
+          failed++;
+        }
+      }
+      const remaining = await ItemModel.countDocuments(filter);
+      res.json({ success: true, computed, failed, remaining });
+    } catch (err) {
+      sendError(res, err, "Embedding hesaplanamad\u0131.", "Embeddings");
+    }
+  });
+  router.get("/api/outfits", authenticateToken, async (req, res) => {
+    try {
+      const outfits = await OutfitModel.find({ userId: req.user.id }).sort({ createdAt: -1 }).lean();
+      res.json({ outfits });
+    } catch (err) {
+      sendError(res, err, "Kombinler al\u0131namad\u0131.", "Outfits");
+    }
+  });
+  router.post("/api/outfits", authenticateToken, async (req, res) => {
+    try {
+      const picked = pickNewOutfit(req.body);
+      if ("error" in picked) return res.status(400).json({ error: picked.error });
+      const owned = await ItemModel.find({ userId: req.user.id, id: { $in: picked.outfit.items } }).select("id").lean();
+      const ownedIds = new Set(owned.map((i) => i.id));
+      const items = picked.outfit.items.filter((id) => ownedIds.has(id));
+      if (items.length === 0) return res.status(400).json({ error: "Kombindeki par\xE7alar gard\u0131robunda bulunamad\u0131." });
+      const context = sanitizeContextSummary(req.body?.context);
+      const newOutfit = await OutfitModel.create({
+        ...picked.outfit,
+        items,
+        context,
+        id: `outfit_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        userId: req.user.id
+      });
+      if (picked.outfit.source !== "manual") {
+        const user = await UserModel.findOne({ _id: req.user.id });
+        const generationId = typeof req.body?.generationId === "string" && /^[\w.:-]{1,100}$/.test(req.body.generationId) ? req.body.generationId : void 0;
+        await recordFeedback(user, { type: "saved", itemIds: items, generationId, context }).catch(() => void 0);
+      }
+      res.json({ success: true, outfit: newOutfit });
+    } catch (err) {
+      sendError(res, err, "Kombin kaydetme ba\u015Far\u0131s\u0131z", "Save Outfit");
+    }
+  });
+  router.delete("/api/outfits/:id", authenticateToken, async (req, res) => {
+    try {
+      await OutfitModel.deleteOne({ id: req.params.id, userId: req.user.id });
+      res.json({ success: true });
+    } catch (err) {
+      sendError(res, err, "Silme ba\u015Far\u0131s\u0131z", "Delete Outfit");
+    }
+  });
+  router.put("/api/outfits/:id", authenticateToken, async (req, res) => {
+    try {
+      const picked = pickOutfitUpdate(req.body);
+      if ("error" in picked) return res.status(400).json({ error: picked.error });
+      const updated = await OutfitModel.findOneAndUpdate(
+        { id: req.params.id, userId: req.user.id },
+        { $set: picked.update },
+        { returnDocument: "after" }
+      );
+      if (!updated) return res.status(404).json({ error: "Bulunamad\u0131" });
+      res.json({ success: true, outfit: updated });
+    } catch (err) {
+      sendError(res, err, "G\xFCncelleme ba\u015Far\u0131s\u0131z", "Update Outfit");
+    }
+  });
+  return router;
+}
+
+// backend/routes/personal.ts
+import express4 from "express";
+
+// backend/push.ts
+import webpush from "web-push";
+var defaultSender = async (subscription, payload) => {
+  const vapid = getVapidConfig();
+  if (!vapid) throw new Error("VAPID anahtarlar\u0131 tan\u0131ml\u0131 de\u011Fil");
+  await webpush.sendNotification(subscription, payload, {
+    vapidDetails: { subject: vapid.subject, publicKey: vapid.publicKey, privateKey: vapid.privateKey },
+    TTL: 6 * 60 * 60
+  });
+};
+var sender = defaultSender;
+function pushPublicKey() {
+  return getVapidConfig()?.publicKey || null;
+}
+var BASE64URL = /^[A-Za-z0-9_-]+={0,2}$/;
+function sanitizeSubscription(raw) {
+  const endpoint = raw?.endpoint;
+  let url = null;
   try {
-    await OutfitModel.deleteOne({ id: req.params.id, userId: req.user.id });
-    res.json({ success: true });
+    url = typeof endpoint === "string" && endpoint.length <= 1e3 ? new URL(endpoint) : null;
   } catch {
-    res.status(500).json({ error: "Silme ba\u015Far\u0131s\u0131z" });
+    url = null;
   }
-});
-app.put("/api/outfits/:id", authenticateToken, async (req, res) => {
+  if (!url || url.protocol !== "https:") throw new RequestError("Ge\xE7ersiz bildirim aboneli\u011Fi.");
+  const p256dh = raw?.keys?.p256dh;
+  const auth = raw?.keys?.auth;
+  if (typeof p256dh !== "string" || typeof auth !== "string" || p256dh.length > 200 || auth.length > 100 || !BASE64URL.test(p256dh) || !BASE64URL.test(auth)) {
+    throw new RequestError("Ge\xE7ersiz bildirim anahtarlar\u0131.");
+  }
+  return { endpoint, keys: { p256dh, auth } };
+}
+async function saveSubscription(userId, subscription) {
+  await PushSubscriptionModel.updateOne(
+    { endpoint: subscription.endpoint },
+    { $set: { userId, keys: subscription.keys }, $setOnInsert: { createdAt: /* @__PURE__ */ new Date() } },
+    { upsert: true }
+  );
+}
+async function removeSubscription(userId, endpoint) {
+  await PushSubscriptionModel.deleteMany({ userId, ...endpoint ? { endpoint } : {} });
+}
+async function sendPushToUser(userId, payload) {
+  const subscriptions = await PushSubscriptionModel.find({ userId }).lean();
+  const body = JSON.stringify(payload);
+  let sent = 0, removed = 0, failed = 0;
+  for (const sub of subscriptions) {
+    try {
+      await sender({ endpoint: sub.endpoint, keys: sub.keys }, body);
+      sent++;
+    } catch (err) {
+      if (err?.statusCode === 404 || err?.statusCode === 410) {
+        await PushSubscriptionModel.deleteOne({ _id: sub._id });
+        removed++;
+      } else {
+        failed++;
+        console.warn("[Push] Bildirim g\xF6nderilemedi:", err?.statusCode || err?.message);
+      }
+    }
+  }
+  return { sent, removed, failed };
+}
+
+// backend/daily.ts
+var DAILY_REQUEST = { event: "G\xFCndelik", dressiness: 3 };
+async function getDailyPick(user, options = {}) {
+  const date = options.date || localDate();
+  if (!options.refresh) {
+    const cached = await DailyPickModel.findOne({ userId: user._id, date }).lean();
+    if (cached?.payload) return { date, cached: true, result: cached.payload };
+  }
+  const result = await generateOutfitsForUser(user, DAILY_REQUEST, { mode: options.mode || "full", picks: 3, useLastLocation: true });
+  await DailyPickModel.updateOne(
+    { userId: user._id, date },
+    { $set: { payload: result, createdAt: /* @__PURE__ */ new Date() } },
+    { upsert: true }
+  );
+  return { date, cached: false, result };
+}
+function dailyPushPayload(pick2) {
+  const outfit = pick2.result.outfits[0];
+  const weather = pick2.result.weather;
+  const weatherText = weather ? `${weather.locationLabel} ${Math.round(weather.temperatureC)}\xB0C, ${weather.condition.toLocaleLowerCase("tr-TR")}` : null;
+  const items = outfit.items.map((i) => i.name).slice(0, 3).join(" + ");
+  return {
+    title: `Bug\xFCn\xFCn kombini: ${outfit.title}`,
+    body: [weatherText, items].filter(Boolean).join(" \xB7 ").slice(0, 180),
+    url: "/?gunluk=1",
+    tag: `daily-${pick2.date}`
+  };
+}
+async function runDailyPicks(options = {}) {
+  const started = Date.now();
+  const budget = options.budgetMs ?? 45e3;
+  const userIds = await PushSubscriptionModel.distinct("userId");
+  const users = await UserModel.find({ _id: { $in: userIds }, "consents.push.granted": true }).limit(options.limit ?? 200).lean();
+  const summary = { users: users.length, sent: 0, skipped: 0, failed: 0, timedOut: false };
+  const today = localDate();
+  for (const user of users) {
+    if (Date.now() - started > budget) {
+      summary.timedOut = true;
+      break;
+    }
+    if (!hasConsent(user, "push")) {
+      summary.skipped++;
+      continue;
+    }
+    try {
+      const alreadySent = await DailyPickModel.findOne({ userId: user._id, date: today, pushedAt: { $exists: true } }).lean();
+      if (alreadySent) {
+        summary.skipped++;
+        continue;
+      }
+      const pick2 = await getDailyPick(user, { mode: "deterministic", date: today });
+      const result = await sendPushToUser(user._id, dailyPushPayload(pick2));
+      await DailyPickModel.updateOne({ userId: user._id, date: today }, { $set: { pushedAt: /* @__PURE__ */ new Date() } });
+      if (result.sent > 0) summary.sent++;
+      else summary.skipped++;
+    } catch (err) {
+      summary.failed++;
+      console.warn("[Daily] G\xFCnl\xFCk kombin \xFCretilemedi:", err?.message);
+    }
+  }
+  return summary;
+}
+
+// backend/engine/trip.ts
+var MAX_TRIP_DAYS = 14;
+var FORECAST_HORIZON_DAYS = 15;
+function sanitizeTripRequest(raw, today = localDate()) {
+  if (!raw || typeof raw !== "object") throw new RequestError("Seyahat bilgileri eksik.");
+  const { startDate, endDate } = raw;
+  if (!isValidLocalDate(startDate) || !isValidLocalDate(endDate)) throw new RequestError("Ba\u015Flang\u0131\xE7 ve biti\u015F tarihi YYYY-AA-GG olmal\u0131.");
+  if (startDate < today) throw new RequestError("Seyahat ba\u015Flang\u0131c\u0131 ge\xE7mi\u015F bir tarih olamaz.");
+  if (endDate < startDate) throw new RequestError("Biti\u015F tarihi ba\u015Flang\u0131\xE7tan \xF6nce olamaz.");
+  if (daysBetween(startDate, endDate) + 1 > MAX_TRIP_DAYS) throw new RequestError(`En fazla ${MAX_TRIP_DAYS} g\xFCnl\xFCk seyahat planlanabilir.`);
+  if (!raw.location) throw new RequestError("Seyahat konumu se\xE7ilmeli.");
+  const event = typeof raw.event === "string" && EVENTS.includes(raw.event) ? raw.event : "Seyahat";
+  const dressiness = Number.isInteger(raw.dressiness) && raw.dressiness >= 1 && raw.dressiness <= 5 ? raw.dressiness : void 0;
+  return { location: raw.location, startDate, endDate, event, dressiness };
+}
+function tripDates(startDate, endDate) {
+  const dates = [];
+  for (let d = startDate; d <= endDate; d = addDays(d, 1)) dates.push(d);
+  return dates;
+}
+var REUSE_BONUS = 4;
+var REPEAT_TOP_PENALTY = 10;
+var MAIN3 = /* @__PURE__ */ new Set(["top", "bottom", "onepiece", "outerwear", "shoes"]);
+function chooseTripOutfits(days) {
+  const packed = /* @__PURE__ */ new Set();
+  let previousTop = null;
+  const planned = [];
+  for (const day of days) {
+    let best = null;
+    let bestValue = -Infinity;
+    for (const outfit of day.candidates) {
+      const main = outfit.items.filter((i) => MAIN3.has(i.category));
+      const reused = main.filter((i) => packed.has(i.id)).length;
+      const top = outfit.items.find((i) => i.category === "top" || i.category === "onepiece")?.id || null;
+      const value = outfit.breakdown.total + REUSE_BONUS * reused - (top && top === previousTop ? REPEAT_TOP_PENALTY : 0);
+      if (value > bestValue) {
+        bestValue = value;
+        best = outfit;
+      }
+    }
+    if (best) {
+      for (const item of best.items) packed.add(item.id);
+      previousTop = best.items.find((i) => i.category === "top" || i.category === "onepiece")?.id || null;
+    } else {
+      previousTop = null;
+    }
+    planned.push({ date: day.date, weather: day.weather, outfit: best });
+  }
+  return planned;
+}
+var PACKING_ORDER = ["outerwear", "top", "onepiece", "bottom", "shoes", "accessory", "makeup"];
+function buildPackingList(planned, dtoById) {
+  const usage = /* @__PURE__ */ new Map();
+  for (const day of planned) for (const id of day.outfit?.itemIds || []) usage.set(id, (usage.get(id) || 0) + 1);
+  const groups = /* @__PURE__ */ new Map();
+  for (const [id, days] of usage) {
+    const dto = dtoById.get(id);
+    if (!dto) continue;
+    const category = String(dto.category);
+    if (!groups.has(category)) groups.set(category, { category, label: CATEGORY_LABELS[category] || category, items: [] });
+    groups.get(category).items.push({ ...dto, days });
+  }
+  return Array.from(groups.values()).map((g) => ({ ...g, items: g.items.sort((a, b) => b.days - a.days) })).sort((a, b) => PACKING_ORDER.indexOf(a.category) - PACKING_ORDER.indexOf(b.category));
+}
+function packingTips(planned) {
+  const tips = [];
+  const weathers = planned.map((d) => d.weather).filter(Boolean);
+  if (weathers.some((w) => (w.precipitationProbability ?? 0) >= 50)) tips.push("Ya\u011F\u0131\u015F olas\u0131l\u0131\u011F\u0131 y\xFCksek g\xFCnler var: katlan\u0131r \u015Femsiye al.");
+  const mins = weathers.map((w) => w.minC).filter((v) => typeof v === "number");
+  const maxs = weathers.map((w) => w.maxC).filter((v) => typeof v === "number");
+  if (mins.length && maxs.length && Math.max(...maxs) - Math.min(...mins) >= 12) {
+    tips.push("G\xFCn i\xE7i s\u0131cakl\u0131k fark\u0131 b\xFCy\xFCk: \xE7\u0131kar\u0131p tak\u0131labilen ince bir katman i\u015Fine yarar.");
+  }
+  if (planned.length >= 5) tips.push("Uzun seyahat: en az bir kez y\u0131kama imk\xE2n\u0131 varsa \xFCst par\xE7a say\u0131s\u0131n\u0131 azaltabilirsin.");
+  return tips;
+}
+async function planTrip(user, trip, wardrobe) {
+  const baseRequest = sanitizeStylistRequest({ event: trip.event, dressiness: trip.dressiness, location: trip.location });
+  if (!baseRequest.location) throw new RequestError("Seyahat konumu ge\xE7ersiz.");
+  const resolved = await resolveLocation(baseRequest.location);
+  if (!resolved) throw new RequestError("Seyahat konumu bulunamad\u0131.", 404);
+  const dates = tripDates(trip.startDate, trip.endDate);
+  const warnings = [];
+  let forecasts = {};
   try {
-    const picked = pickOutfitUpdate(req.body);
-    if ("error" in picked) return res.status(400).json({ error: picked.error });
-    const updated = await OutfitModel.findOneAndUpdate(
-      { id: req.params.id, userId: req.user.id },
-      { $set: picked.update },
-      { returnDocument: "after" }
-    );
-    if (!updated) return res.status(404).json({ error: "Bulunamad\u0131" });
-    res.json({ success: true, outfit: updated });
+    forecasts = await getDailyForecast(resolved, dates);
   } catch {
-    res.status(500).json({ error: "G\xFCncelleme ba\u015Far\u0131s\u0131z" });
+    warnings.push("Hava durumu tahmini al\u0131namad\u0131; kombinler mevsime g\xF6re haz\u0131rland\u0131.");
   }
-});
+  const horizon = addDays(localDate(), FORECAST_HORIZON_DAYS);
+  if (dates.some((d) => d > horizon)) warnings.push("Tahmin penceresinin d\u0131\u015F\u0131ndaki g\xFCnler i\xE7in hava durumu kullan\u0131lamad\u0131.");
+  const snapshot = wardrobe || await loadWardrobe(user._id);
+  const dayCandidates = [];
+  for (const date of dates) {
+    const weather = forecasts[date] || null;
+    try {
+      const run = await runEngine(user, { ...baseRequest, location: void 0, dateTime: `${date}T12:00`, ignoreWeather: !weather }, {
+        mode: "deterministic",
+        candidateLimit: 8,
+        weatherOverride: { weather, weatherError: null, resolved }
+      }, snapshot);
+      dayCandidates.push({ date, weather: run.ctx.weather, candidates: run.candidates, ctx: run.ctx });
+      warnings.push(...run.warnings);
+    } catch (err) {
+      if (err instanceof RequestError && err.status === 422 && err.message.includes("gard\u0131robuna")) throw err;
+      dayCandidates.push({ date, weather, candidates: [] });
+      warnings.push(`${date} i\xE7in uygun kombin bulunamad\u0131.`);
+    }
+  }
+  const planned = chooseTripOutfits(dayCandidates);
+  const days = [];
+  for (const day of planned) {
+    if (!day.outfit) {
+      days.push({ date: day.date, weather: day.weather, outfit: null, note: "Uygun kombin bulunamad\u0131." });
+      continue;
+    }
+    const ctx = dayCandidates.find((d) => d.date === day.date)?.ctx;
+    days.push({
+      date: day.date,
+      weather: day.weather,
+      note: null,
+      outfit: {
+        id: day.outfit.id,
+        itemIds: day.outfit.itemIds,
+        items: day.outfit.itemIds.map((id) => snapshot.dtoById.get(id)).filter(Boolean),
+        title: ctx ? deterministicTitle(day.outfit, ctx) : "Seyahat kombini",
+        reason: ctx ? deterministicReason(day.outfit, ctx) : "",
+        score: day.outfit.breakdown.total,
+        breakdown: day.outfit.breakdown
+      }
+    });
+  }
+  return {
+    locationLabel: resolved.label,
+    days,
+    packingList: buildPackingList(planned, snapshot.dtoById),
+    tips: packingTips(planned),
+    warnings: Array.from(new Set(warnings))
+  };
+}
+
+// backend/personalColor.ts
+import { MediaResolution as MediaResolution3 } from "@google/genai";
+var UNDERTONES = ["s\u0131cak", "so\u011Fuk", "n\xF6tr"];
+var CONTRASTS = ["d\xFC\u015F\xFCk", "orta", "y\xFCksek"];
+var ALLOWED_MIME = ["image/jpeg", "image/png", "image/webp"];
+var MAX_SELFIE_BASE64 = 56e5;
+var SCHEMA = {
+  type: "object",
+  properties: {
+    faceVisible: { type: "boolean" },
+    season: { type: "string", enum: [...SEASONS] },
+    undertone: { type: "string", enum: [...UNDERTONES] },
+    contrast: { type: "string", enum: [...CONTRASTS] },
+    bestColorFamilies: { type: "array", minItems: 3, maxItems: 6, items: { type: "string", enum: [...COLOR_FAMILIES] } },
+    avoidColorFamilies: { type: "array", maxItems: 4, items: { type: "string", enum: [...COLOR_FAMILIES] } },
+    note: { type: "string" }
+  },
+  required: ["faceVisible", "season", "undertone", "contrast", "bestColorFamilies", "avoidColorFamilies", "note"]
+};
+var PROMPT = `Bu foto\u011Fraf ki\u015Finin k\u0131yafet renk se\xE7imine yard\u0131mc\u0131 olmak i\xE7in g\xF6nderildi. Mevsimsel renk analizi yap.
+
+- faceVisible: y\xFCz do\u011Fal \u0131\u015F\u0131kta ve net g\xF6r\xFCn\xFCyor mu (y\xFCz yoksa veya \xE7ok karanl\u0131k/filtreliyse false)
+- undertone: cilt alt tonu (s\u0131cak, so\u011Fuk, n\xF6tr); contrast: sa\xE7, g\xF6z ve cilt aras\u0131ndaki kontrast d\xFCzeyi
+- season: bu \xF6zelliklere en uygun renk mevsimi (ilkbahar, yaz, sonbahar, k\u0131\u015F)
+- bestColorFamilies: y\xFCze yak\u0131n giyildi\u011Finde en iyi duran 3-6 renk ailesi; avoidColorFamilies: y\xFCze yak\u0131n giyildi\u011Finde soluk g\xF6sterebilecek en fazla 4 renk ailesi (iki listede ayn\u0131 renk olmas\u0131n)
+- note: sonucu 2 k\u0131sa T\xFCrk\xE7e c\xFCmleyle, nazik ve yarg\u0131lamayan bir dille a\xE7\u0131kla
+
+Ki\u015Finin g\xF6r\xFCn\xFC\u015F\xFC, ya\u015F\u0131, kilosu, etnik k\xF6keni veya g\xFCzelli\u011Fi hakk\u0131nda yorum yapma; yaln\u0131zca renk uyumundan bahset. Emin de\u011Filsen n\xF6tr alt ton ve orta kontrast se\xE7.`;
+function sanitizeSelfie(raw) {
+  const mimeType = raw?.mimeType;
+  let base64 = raw?.base64;
+  if (typeof base64 !== "string" || typeof mimeType !== "string" || !ALLOWED_MIME.includes(mimeType)) {
+    throw new RequestError("JPEG, PNG veya WEBP bi\xE7iminde bir foto\u011Fraf g\xF6nder.");
+  }
+  base64 = base64.replace(/^data:image\/[a-z]+;base64,/, "");
+  if (base64.length < 100 || base64.length > MAX_SELFIE_BASE64 || !/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) {
+    throw new RequestError("Foto\u011Fraf okunamad\u0131 veya \xE7ok b\xFCy\xFCk (en fazla 4 MB).");
+  }
+  return { base64, mimeType };
+}
+function normalizePersonalColor(raw, now = /* @__PURE__ */ new Date()) {
+  const pick2 = (value, options, fallback) => typeof value === "string" && options.includes(value) ? value : fallback;
+  const families = (value, max) => Array.isArray(value) ? Array.from(new Set(value.filter((v) => typeof v === "string" && COLOR_FAMILIES.includes(v)))).slice(0, max) : [];
+  const best = families(raw?.bestColorFamilies, 6);
+  const avoid = families(raw?.avoidColorFamilies, 4).filter((c) => !best.includes(c));
+  return {
+    season: pick2(raw?.season, SEASONS, "sonbahar"),
+    undertone: pick2(raw?.undertone, UNDERTONES, "n\xF6tr"),
+    contrast: pick2(raw?.contrast, CONTRASTS, "orta"),
+    bestColorFamilies: best,
+    avoidColorFamilies: avoid,
+    note: typeof raw?.note === "string" ? raw.note.trim().slice(0, 400) : "",
+    analyzedAt: now.toISOString()
+  };
+}
+async function analyzePersonalColor(image) {
+  const { data } = await generateJson({
+    task: "vision",
+    label: "personal_color",
+    contents: [{ inlineData: { mimeType: image.mimeType, data: image.base64 } }, { text: PROMPT }],
+    schema: SCHEMA,
+    mediaResolution: MediaResolution3.MEDIA_RESOLUTION_MEDIUM
+  });
+  if (data?.faceVisible === false) {
+    throw new AiError("bad_request", "Foto\u011Frafta y\xFCz net g\xF6r\xFCnm\xFCyor. G\xFCn \u0131\u015F\u0131\u011F\u0131nda, filtresiz bir foto\u011Fraf dene.");
+  }
+  const result = normalizePersonalColor(data);
+  if (result.bestColorFamilies.length === 0) throw new AiError("invalid_output", "Renk analizi tamamlanamad\u0131.");
+  return result;
+}
+function sanitizeStyleProfile(raw) {
+  if (!raw || typeof raw !== "object") throw new RequestError("Stil profili eksik.");
+  const update = {};
+  const list = (field, options, max) => {
+    const value = raw[field];
+    if (value === void 0) return;
+    if (!Array.isArray(value) || value.length > max || !value.every((v) => typeof v === "string" && options.includes(v))) {
+      throw new RequestError(`Ge\xE7ersiz alan: ${field}`);
+    }
+    update[field] = Array.from(new Set(value));
+  };
+  const fits = FITS.filter((f) => f !== "belirsiz");
+  list("preferredFits", fits, fits.length);
+  list("avoidFits", fits, fits.length);
+  list("dislikedColorFamilies", COLOR_FAMILIES, COLOR_FAMILIES.length);
+  if (update.preferredFits && update.avoidFits && update.preferredFits.some((f) => update.avoidFits.includes(f))) {
+    throw new RequestError("Bir kesim hem tercih edilen hem ka\xE7\u0131n\u0131lan olamaz.");
+  }
+  if (raw.notes !== void 0) {
+    if (typeof raw.notes !== "string" || raw.notes.length > 1e3) throw new RequestError("Ge\xE7ersiz alan: notes");
+    update.notes = raw.notes.trim();
+  }
+  return update;
+}
+async function toStyleProfileDTO(userDoc) {
+  const user = typeof userDoc?.toObject === "function" ? userDoc.toObject() : userDoc;
+  const sp = user?.styleProfile || {};
+  const pc = hasConsent(user, "personalColor") && sp.personalColor?.analyzedAt ? sp.personalColor : null;
+  return {
+    preferredFits: sp.preferredFits || [],
+    avoidFits: sp.avoidFits || [],
+    dislikedColorFamilies: sp.dislikedColorFamilies || [],
+    notes: sp.notes || "",
+    personalColor: pc ? { ...pc, analyzedAt: new Date(pc.analyzedAt).toISOString() } : null,
+    preferenceSummary: await preferenceSummary(user)
+  };
+}
+
+// backend/routes/personal.ts
+async function loadUser(req) {
+  const user = await UserModel.findOne({ _id: req.user.id });
+  if (!user) throw new RequestError("Kullan\u0131c\u0131 bulunamad\u0131.", 404);
+  return user;
+}
+function personalRoutes() {
+  const router = express4.Router();
+  router.post("/api/feedback", authenticateToken, rateLimit("feedback", RATE_LIMITS.feedback, byUser), async (req, res) => {
+    try {
+      const feedback = sanitizeFeedback(req.body);
+      const user = await loadUser(req);
+      const outcome = await handleFeedback(user, feedback);
+      res.json({ success: true, ...outcome });
+    } catch (err) {
+      sendError(res, err, "Geri bildirim kaydedilemedi", "Feedback");
+    }
+  });
+  router.get("/api/wear-log", authenticateToken, async (req, res) => {
+    try {
+      const { from, to } = parseRange(req.query);
+      res.json({ from, to, entries: await listWear(req.user.id, from, to) });
+    } catch (err) {
+      sendError(res, err, "Giyim g\xFCnl\xFC\u011F\xFC al\u0131namad\u0131.", "Wear Log");
+    }
+  });
+  router.post("/api/wear-log", authenticateToken, rateLimit("wearlog", RATE_LIMITS.wearLog, byUser), async (req, res) => {
+    try {
+      const entry = await recordWear(req.user.id, sanitizeWearInput(req.body));
+      res.json({ success: true, entry });
+    } catch (err) {
+      sendError(res, err, "Giyim kayd\u0131 eklenemedi.", "Wear Log");
+    }
+  });
+  router.delete("/api/wear-log/:id", authenticateToken, async (req, res) => {
+    try {
+      const deleted = await deleteWear(req.user.id, String(req.params.id));
+      if (!deleted) return res.status(404).json({ error: "Kay\u0131t bulunamad\u0131." });
+      res.json({ success: true });
+    } catch (err) {
+      sendError(res, err, "Giyim kayd\u0131 silinemedi.", "Wear Log");
+    }
+  });
+  router.get("/api/stats", authenticateToken, async (req, res) => {
+    try {
+      const today = localDate();
+      const [items, logs] = await Promise.all([
+        ItemModel.find({ userId: req.user.id }).select("+embedding").lean(),
+        WearLogModel.find({ userId: req.user.id, date: { $gte: addDays(today, -365) } }).select("date itemIds").lean()
+      ]);
+      res.json(computeWardrobeStats(items, logs, today));
+    } catch (err) {
+      sendError(res, err, "\u0130statistikler hesaplanamad\u0131.", "Stats");
+    }
+  });
+  router.get("/api/daily-pick", authenticateToken, rateLimit("daily", RATE_LIMITS.dailyPick, byUser), async (req, res) => {
+    try {
+      const user = await loadUser(req);
+      res.json(await getDailyPick(user, { refresh: req.query.refresh === "1" }));
+    } catch (err) {
+      sendError(res, err, "G\xFCn\xFCn kombini haz\u0131rlanamad\u0131.", "Daily Pick");
+    }
+  });
+  router.post("/api/trips/plan", authenticateToken, rateLimit("trip", RATE_LIMITS.tripPlan, byUser), async (req, res) => {
+    try {
+      const trip = sanitizeTripRequest(req.body);
+      const user = await loadUser(req);
+      res.json(await planTrip(user, trip));
+    } catch (err) {
+      sendError(res, err, "Seyahat plan\u0131 olu\u015Fturulamad\u0131.", "Trip");
+    }
+  });
+  router.get("/api/push/public-key", authenticateToken, (_req, res) => {
+    const publicKey = pushPublicKey();
+    res.json({ enabled: Boolean(publicKey), publicKey });
+  });
+  router.post("/api/push/subscribe", authenticateToken, rateLimit("push", RATE_LIMITS.push, byUser), async (req, res) => {
+    try {
+      if (!pushPublicKey()) return res.status(503).json({ error: "Bildirimler bu sunucuda etkin de\u011Fil." });
+      const user = await loadUser(req);
+      if (!hasConsent(user, "push")) return res.status(403).json({ error: "Bildirim almak i\xE7in \xF6nce Hesap Ayarlar\u0131'ndan izin vermelisin." });
+      await saveSubscription(user._id, sanitizeSubscription(req.body));
+      res.json({ success: true });
+    } catch (err) {
+      sendError(res, err, "Bildirim aboneli\u011Fi kaydedilemedi.", "Push");
+    }
+  });
+  router.delete("/api/push/subscribe", authenticateToken, async (req, res) => {
+    try {
+      const endpoint = typeof req.body?.endpoint === "string" ? req.body.endpoint : void 0;
+      await removeSubscription(req.user.id, endpoint);
+      res.json({ success: true });
+    } catch (err) {
+      sendError(res, err, "Abonelik kald\u0131r\u0131lamad\u0131.", "Push");
+    }
+  });
+  router.get("/api/style/profile", authenticateToken, async (req, res) => {
+    try {
+      res.json(await toStyleProfileDTO(await loadUser(req)));
+    } catch (err) {
+      sendError(res, err, "Stil profili al\u0131namad\u0131.", "Style Profile");
+    }
+  });
+  router.put("/api/style/profile", authenticateToken, async (req, res) => {
+    try {
+      const update = sanitizeStyleProfile(req.body);
+      const set = Object.fromEntries(Object.entries(update).map(([k, v]) => [`styleProfile.${k}`, v]));
+      const user = await UserModel.findOneAndUpdate({ _id: req.user.id }, { $set: set }, { returnDocument: "after" });
+      if (!user) return res.status(404).json({ error: "Kullan\u0131c\u0131 bulunamad\u0131." });
+      res.json(await toStyleProfileDTO(user));
+    } catch (err) {
+      sendError(res, err, "Stil profili kaydedilemedi.", "Style Profile");
+    }
+  });
+  router.post("/api/style/personal-color", authenticateToken, rateLimit("personalColor", RATE_LIMITS.personalColor, byUser), async (req, res) => {
+    try {
+      const user = await loadUser(req);
+      if (!hasConsent(user, "personalColor")) {
+        return res.status(403).json({ error: "Ki\u015Fisel renk analizi i\xE7in \xF6nce a\xE7\u0131k r\u0131za vermelisin." });
+      }
+      const result = await analyzePersonalColor(sanitizeSelfie(req.body));
+      const updated = await UserModel.findOneAndUpdate(
+        { _id: req.user.id },
+        { $set: { "styleProfile.personalColor": { ...result, analyzedAt: new Date(result.analyzedAt) } } },
+        { returnDocument: "after" }
+      );
+      res.json(await toStyleProfileDTO(updated));
+    } catch (err) {
+      sendError(res, err, "Renk analizi yap\u0131lamad\u0131.", "Personal Color");
+    }
+  });
+  router.delete("/api/style/personal-color", authenticateToken, async (req, res) => {
+    try {
+      const updated = await UserModel.findOneAndUpdate(
+        { _id: req.user.id },
+        { $unset: { "styleProfile.personalColor": "" } },
+        { returnDocument: "after" }
+      );
+      res.json(await toStyleProfileDTO(updated));
+    } catch (err) {
+      sendError(res, err, "Renk analizi silinemedi.", "Personal Color");
+    }
+  });
+  router.get("/api/cron/daily", async (req, res) => {
+    const secret = getCronSecret();
+    if (!secret || req.headers.authorization !== `Bearer ${secret}`) {
+      return res.status(401).json({ error: "Yetkisiz." });
+    }
+    try {
+      const knowledge = await warmRuleEmbeddings(20).catch(() => null);
+      const daily = await runDailyPicks({ budgetMs: 4e4 });
+      res.json({ success: true, daily, knowledge });
+    } catch (err) {
+      sendError(res, err, "Zamanlanm\u0131\u015F g\xF6rev ba\u015Far\u0131s\u0131z.", "Cron");
+    }
+  });
+  return router;
+}
+
+// backend/app.ts
+var MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
+function cloudinaryUpload() {
+  const storage = new CloudinaryStorage({
+    cloudinary,
+    params: async (req, file) => {
+      const userId = req.user?.id || "public";
+      const uniqueId = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const cleanPublicId = file.originalname.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_\-.]/g, "").replace(/\.[^/.]+$/, "").slice(0, 60);
+      return {
+        folder: `digital_wardrobe/${userId}`,
+        allowed_formats: ["jpg", "jpeg", "png", "webp"],
+        public_id: `${cleanPublicId}_${uniqueId}`
+      };
+    }
+  });
+  return multer({ storage, limits: { fileSize: MAX_UPLOAD_BYTES } }).single("image");
+}
+var ALLOWED_ORIGINS = [
+  process.env.APP_URL,
+  "https://samethabali.github.io",
+  "https://aura-mobile.expo.app",
+  "exp://aura-mobile.expo.app",
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "http://localhost:8081",
+  "exp://localhost:8081"
+];
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  if (ALLOWED_ORIGINS.includes(origin)) return true;
+  if (origin.endsWith(".vercel.app")) return true;
+  return /^(http|exp):\/\/(192\.168\.|172\.|10\.)/.test(origin);
+}
+function createApp(options = {}) {
+  const app2 = express5();
+  app2.disable("x-powered-by");
+  app2.use(cors({
+    origin(origin, callback) {
+      if (isAllowedOrigin(origin)) return callback(null, true);
+      console.warn(`[CORS] Engellenen origin: ${origin}`);
+      callback(null, false);
+    }
+  }));
+  app2.use(express5.json({ limit: "20mb" }));
+  app2.get("/api/health", (_req, res) => res.json({ status: "ok", timestamp: (/* @__PURE__ */ new Date()).toISOString() }));
+  app2.use(async (_req, res, next) => {
+    try {
+      await connectToDatabase();
+      next();
+    } catch (err) {
+      console.error("[MongoDB Middleware] Ba\u011Flant\u0131 kurulamad\u0131:", err?.message || err);
+      res.status(503).json({ error: "Veritaban\u0131 ba\u011Flant\u0131s\u0131 kurulamad\u0131. L\xFCtfen daha sonra tekrar deneyin." });
+    }
+  });
+  if (options.logRequests !== false) {
+    app2.use((req, _res, next) => {
+      console.log(`[Server] ${req.method} ${req.path}`);
+      next();
+    });
+  }
+  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
+    app2.get("/api/debug-models", (_req, res) => {
+      res.json({ stylist: modelsFor("stylist"), vision: modelsFor("vision"), light: modelsFor("light") });
+    });
+  }
+  app2.use(authRoutes());
+  app2.use(socialRoutes());
+  app2.use(wardrobeRoutes({ uploadMiddleware: options.uploadMiddleware || cloudinaryUpload() }));
+  app2.use(personalRoutes());
+  app2.use("/api", (_req, res) => {
+    res.status(404).json({ error: "U\xE7 nokta bulunamad\u0131." });
+  });
+  app2.use((err, _req, res, _next) => {
+    if (err?.type === "entity.parse.failed") return res.status(400).json({ error: "\u0130stek g\xF6vdesi okunamad\u0131." });
+    if (err?.type === "entity.too.large" || err?.code === "LIMIT_FILE_SIZE") return res.status(413).json({ error: "Dosya \xE7ok b\xFCy\xFCk." });
+    console.error("[Server] Beklenmeyen hata:", err);
+    res.status(500).json({ error: "Sunucu hatas\u0131." });
+  });
+  return app2;
+}
+
+// backend/migration.ts
+var LEGACY_OWNER_EMAIL = "samet@aura.com";
+async function runMigration() {
+  try {
+    const usersWithoutUsername = await UserModel.find({ username: { $exists: false } });
+    for (const u of usersWithoutUsername) {
+      const emailPrefix = u.email.split("@")[0].toLowerCase().replace(/[^a-z0-9]/g, "");
+      const uniqueSuffix = Math.random().toString(36).slice(2, 6);
+      u.username = `${emailPrefix}_${uniqueSuffix}`;
+      await u.save();
+      console.log(`[Migration] ${u.email} kullan\u0131c\u0131s\u0131na varsay\u0131lan kullan\u0131c\u0131 ad\u0131 (${u.username}) tan\u0131mland\u0131.`);
+    }
+    const privacy = await UserModel.updateMany({ isPrivate: { $exists: false } }, { $set: { isPrivate: false } });
+    if (privacy.modifiedCount > 0) console.log(`[Migration] ${privacy.modifiedCount} kullan\u0131c\u0131n\u0131n gizlilik ayar\u0131 varsay\u0131lan (false) yap\u0131ld\u0131.`);
+    const [itemsWithoutUser, outfitsWithoutUser] = await Promise.all([
+      ItemModel.countDocuments({ userId: { $exists: false } }),
+      OutfitModel.countDocuments({ userId: { $exists: false } })
+    ]);
+    if (itemsWithoutUser === 0 && outfitsWithoutUser === 0) return;
+    const legacyOwner = await UserModel.findOne({ email: LEGACY_OWNER_EMAIL });
+    if (!legacyOwner) {
+      console.warn(`[Migration] ${LEGACY_OWNER_EMAIL} hesab\u0131 bulunamad\u0131; sahipsiz kay\u0131tlar ba\u011Flanmadan b\u0131rak\u0131ld\u0131.`);
+      return;
+    }
+    if (itemsWithoutUser > 0) {
+      await ItemModel.updateMany({ userId: { $exists: false } }, { $set: { userId: legacyOwner._id } });
+      console.log(`[Migration] ${itemsWithoutUser} sahipsiz gard\u0131rop \xF6\u011Fesi ${LEGACY_OWNER_EMAIL} hesab\u0131na ba\u011Fland\u0131.`);
+    }
+    if (outfitsWithoutUser > 0) {
+      await OutfitModel.updateMany({ userId: { $exists: false } }, { $set: { userId: legacyOwner._id } });
+      console.log(`[Migration] ${outfitsWithoutUser} sahipsiz kombin ${LEGACY_OWNER_EMAIL} hesab\u0131na ba\u011Fland\u0131.`);
+    }
+  } catch (err) {
+    console.error("[Migration] Hata olu\u015Ftu:", err);
+  }
+}
+
+// server.ts
+var PORT = 3e3;
+setOnFirstConnect(runMigration);
+connectToDatabase().catch((err) => console.error("[MongoDB] \u0130lk ba\u011Flant\u0131 hatas\u0131:", err?.message || err));
+var app = createApp();
 if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
   import("vite").then(({ createServer }) => {
     createServer({ server: { middlewareMode: true }, appType: "spa" }).then((vite) => {

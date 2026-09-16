@@ -5,7 +5,7 @@ import PromptModal from '../components/PromptModal';
 interface NotificationContextType {
   notify: (message: string, type?: 'success' | 'error' | 'info') => void;
   ask: (title: string, defaultValue?: string) => Promise<string | null>;
-  askConfirm: (title: string, message: string) => Promise<boolean>;
+  askConfirm: (title: string, message: string, confirmText?: string) => Promise<boolean>;
 }
 
 const NotificationContext = createContext<NotificationContextType | undefined>(undefined);
@@ -23,6 +23,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     isOpen: boolean;
     title: string;
     message: string;
+    confirmText?: string;
     resolve: (val: boolean) => void;
   }>({ isOpen: false, title: '', message: '', resolve: () => {} });
 
@@ -38,9 +39,9 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     });
   };
 
-  const askConfirm = (title: string, message: string): Promise<boolean> => {
+  const askConfirm = (title: string, message: string, confirmText?: string): Promise<boolean> => {
     return new Promise((resolve) => {
-      setConfirmConfig({ isOpen: true, title, message, resolve });
+      setConfirmConfig({ isOpen: true, title, message, confirmText, resolve });
     });
   };
 
@@ -70,6 +71,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
         isOpen={confirmConfig.isOpen}
         title={confirmConfig.title}
         message={confirmConfig.message}
+        confirmText={confirmConfig.confirmText}
         confirmOnly
         onConfirm={() => {
           confirmConfig.resolve(true);

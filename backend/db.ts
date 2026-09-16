@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { getMongoUri } from './config.js';
 
 // ─── Kullanıcı ─────────────────────────────────────────────────────────────
 const PersonalColorSchema = new mongoose.Schema({
@@ -172,6 +173,7 @@ const DailyPickSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
   date: { type: String, required: true },
   payload: mongoose.Schema.Types.Mixed,
+  pushedAt: Date,
   createdAt: { type: Date, default: Date.now, expires: 60 * 60 * 24 * 7 },
 });
 DailyPickSchema.index({ userId: 1, date: 1 }, { unique: true });
@@ -216,8 +218,7 @@ export async function connectToDatabase() {
     return cachedConnection;
   }
 
-  const FALLBACK_MONGODB_URI = 'mongodb+srv://smthbl_db_user:I0cqcx1HGGNEuo4y@cluster0.4ixj9s3.mongodb.net/?appName=Cluster0';
-  const uri = process.env.MONGODB_URI || FALLBACK_MONGODB_URI;
+  const uri = getMongoUri();
 
   // Serverless için bağlantıyı önbelleğe al
   cachedConnection = await mongoose.connect(uri);

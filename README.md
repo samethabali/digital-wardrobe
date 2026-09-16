@@ -40,19 +40,11 @@ Eğer projeyi kendi bilgisayarınızda çalıştırmak isterseniz aşağıdaki a
     ```
 
 3.  **Çevre Değişkenlerini (Environment Variables) Ayarlayın**
-    Projenin ana dizininde `.env` isimli bir dosya oluşturun ve gerekli API anahtarlarını girin:
-    ```env
-    GEMINI_API_KEY=sizin_gemini_anahtariniz
-    MONGODB_URI=mongodb+srv://...
-    CLOUDINARY_CLOUD_NAME=xxx
-    CLOUDINARY_API_KEY=xxx
-    CLOUDINARY_API_SECRET=xxx
-    JWT_SECRET=en_az_32_karakterlik_rastgele_bir_deger
-    ```
-    `JWT_SECRET` zorunludur; tanımlı değilse sunucu başlamaz. Güçlü bir değer üretmek için:
+    `.env.example` dosyasını `.env` olarak kopyalayıp doldurun. `MONGODB_URI`, `JWT_SECRET` (en az 32 karakter), `GEMINI_API_KEY` ve `CLOUDINARY_*` zorunludur; kodda bunların yedek değeri yoktur. Güçlü bir `JWT_SECRET` üretmek için:
     ```bash
     node -e "console.log(require('crypto').randomBytes(48).toString('base64'))"
     ```
+    Günlük kombin bildirimi için `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` (`npx web-push generate-vapid-keys`) ve `CRON_SECRET` isteğe bağlıdır.
 
 4.  **Sunucuyu Başlatın**
     ```bash
@@ -60,10 +52,22 @@ Eğer projeyi kendi bilgisayarınızda çalıştırmak isterseniz aşağıdaki a
     ```
     Tarayıcınızda `http://localhost:3000` adresine giderek uygulamayı kullanmaya başlayabilirsiniz.
 
+## 🧪 Test ve Ölçüm
+
+| Komut | Ne yapar |
+|---|---|
+| `npm test` | Birim ve uç nokta testleri (bellek içi MongoDB; ağ ve API anahtarı gerekmez) |
+| `npm run lint` | TypeScript tip kontrolü |
+| `npm run eval` | Öneri motoru değerlendirmesi (3 gardırop × 10 senaryo); `-- --llm` ile AI stilist dahil |
+| `npx tsx scripts/list-models.ts` | API anahtarının erişebildiği Gemini modelleri ve koddaki listelerin kontrolü |
+| `npx tsx scripts/embed-knowledge.ts` | Stil bilgi tabanı embedding'lerini önbelleğe yazar (kural/model değişince) |
+| `npx tsx scripts/train-reranker.ts` | Geri bildirimlerden uyum yeniden sıralayıcısını eğitir (yeterli veri varsa) |
+
 ## 📱 Yayına Alma (Deployment)
 
-Proje Vercel için tam uyumludur (Serverless). 
-Sadece GitHub deponuzu Vercel'e bağlayıp Environment Variables kısmına `.env` dosyasındaki verileri ekleyerek **Sıfır Konfigürasyon** ile tek tıkla canlıya alabilirsiniz.
+Proje Vercel'de çalışır. Vercel, depodaki derlenmiş `api/index.js` sunucu paketini kullanır: sunucu kodunu değiştirdiğinizde `npm run build` çalıştırıp paketi de commit edin (`npm test` paketin güncel olmadığını yakalar).
+
+Vercel Environment Variables kısmına `.env.example`'daki değişkenleri ekleyin. `vercel.json` içindeki zamanlanmış görev her sabah 08:00'de (TSİ) `/api/cron/daily` uç noktasını çağırır; `CRON_SECRET` tanımlı olmalıdır.
 
 ---
 *Geliştirici: [Samet Habalı](https://github.com/samethabali)*

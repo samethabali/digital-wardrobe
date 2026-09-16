@@ -9,35 +9,63 @@ test('WMO tablosu Open-Meteo kodlarının tamamını içerir (sağanak dahil)', 
   for (const code of all) assert.ok(WMO_CODES[code], `kod ${code} eksik`);
 });
 
-test('il/ilçe konumu Open-Meteo\'ya "İlçe, İl" sırası ve countryCode=TR ile gönderilir', async () => {
+function recordingFetcher(results: Record<string, any[]>) {
   const calls: string[] = [];
   setWeatherFetcherForTests(async (url) => {
     calls.push(decodeURIComponent(url));
-    const name = new URL(url).searchParams.get('name');
-    const results = name === 'Kadıköy, İstanbul'
-      ? [{ name: 'Kadıköy', latitude: 40.98, longitude: 29.08, admin1: 'İstanbul' }]
-      : [];
-    return { ok: true, status: 200, json: async () => ({ results }) };
+    const name = new URL(url).searchParams.get('name') || '';
+    return { ok: true, status: 200, json: async () => ({ results: results[name] || [] }) };
   });
-  const loc = await resolveLocation({ type: 'place', province: 'İstanbul', district: 'Kadıköy' });
+  return calls;
+}
+
+test('bilinen ilçe yerel veritabanından ağsız çözülür (canlıdaki yol testte de çalışır)', async () => {
+  const calls = recordingFetcher({});
+  const place = await resolveLocation({ type: 'place', province: 'İstanbul', district: 'Kadıköy' });
+  const text = await resolveLocation('Kadıköy');
+  const legacyOrder = await resolveLocation('İstanbul, Kadıköy');
   setWeatherFetcherForTests(null);
-  assert.equal(loc?.latitude, 40.98);
-  assert.ok(calls[0].includes('name=Kadıköy, İstanbul'));
+  assert.equal(calls.length, 0, `ağ çağrısı yapılmamalı: ${calls.join(' | ')}`);
+  for (const loc of [place, text, legacyOrder]) {
+    assert.equal(loc?.label, 'Kadıköy, İstanbul');
+    assert.ok(Math.abs(loc!.latitude - 40.98) < 0.01);
+  }
+  const province = await resolveLocation({ type: 'place', province: 'Ankara' });
+  assert.equal(province?.label, 'Ankara');
+});
+
+test('koordinatı yaklaşık ilçe Open-Meteo ile "İlçe, İl" + countryCode=TR sorgusuyla netleştirilir', async () => {
+  const calls = recordingFetcher({ 'Kaş, Antalya': [{ name: 'Kaş', latitude: 36.2, longitude: 29.64, admin1: 'Antalya' }] });
+  const loc = await resolveLocation({ type: 'place', province: 'Antalya', district: 'Kaş' });
+  setWeatherFetcherForTests(null);
+  assert.equal(loc?.latitude, 36.2);
+  assert.ok(calls[0].includes('name=Kaş, Antalya'));
   assert.ok(calls[0].includes('countryCode=TR'));
 });
 
-test('eski "İl, İlçe" metni yanlış ildeki aynı adlı yere gitmez', async () => {
-  setWeatherFetcherForTests(async (url) => {
-    const name = new URL(url).searchParams.get('name');
-    const results: any[] = [];
-    if (name === 'Kadıköy') results.push({ name: 'Babadağ', latitude: 37.8, longitude: 28.8, admin1: 'Denizli' });
-    if (name === 'Kadıköy, İstanbul') results.push({ name: 'Kadıköy', latitude: 40.98, longitude: 29.08, admin1: 'İstanbul' });
-    if (name === 'İstanbul') results.push({ name: 'İstanbul', latitude: 41.01, longitude: 28.95, admin1: 'İstanbul' });
-    return { ok: true, status: 200, json: async () => ({ results }) };
-  });
-  const loc = await resolveLocation('İstanbul, Kadıköy');
+test('servis yanıt vermezse yaklaşık ilçe konumu (il merkezi) ile devam edilir', async () => {
+  setWeatherFetcherForTests(async () => { throw new Error('ağ yok'); });
+  const loc = await resolveLocation({ type: 'place', province: 'Antalya', district: 'Kaş' });
   setWeatherFetcherForTests(null);
-  assert.equal(loc?.latitude, 40.98);
+  assert.equal(loc?.label, 'Kaş, Antalya');
+  assert.ok(Math.abs(loc!.latitude - 36.9) < 0.2, `il merkezi bekleniyordu: ${loc?.latitude}`);
+});
+
+test('ilçe yanlış ilde aranmaz: aynı adlı yer başka ildeyse kabul edilmez', async () => {
+  // Yerel veritabanında olmayan bir mahalle adı → ağ; admin1 eşleşmeyen sonuç reddedilir
+  recordingFetcher({ 'Moda': [{ name: 'Moda', latitude: 37.8, longitude: 28.8, admin1: 'Denizli' }] });
+  const loc = await resolveLocation({ type: 'place', province: 'İstanbul', district: 'Moda' });
+  setWeatherFetcherForTests(null);
+  assert.notEqual(loc?.latitude, 37.8);
+  assert.equal(loc?.label, 'İstanbul');
+});
+
+test('yerelde olmayan yurt dışı metni Open-Meteo servisine gider; sonuç yoksa null', async () => {
+  const calls = recordingFetcher({});
+  const loc = await resolveLocation('Atlantis');
+  setWeatherFetcherForTests(null);
+  assert.equal(loc, null);
+  assert.equal(calls.length, 1);
 });
 
 test('istenen saatin tahmini ve günün min/max değerleri seçilir', async () => {

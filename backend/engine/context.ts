@@ -207,6 +207,8 @@ export function summarizeContext(ctx: StyleContext): ContextSummary {
     outerwear: ctx.outerwear,
     needsWaterResistant: ctx.needsWaterResistant,
     season: ctx.season,
+    feelsLikeC: ctx.weather ? ctx.weather.feelsLikeC : null,
+    indoor: ctx.indoor,
   };
 }
 
@@ -218,3 +220,34 @@ export const TEMP_BAND_LABELS: Record<TempBand, string> = {
   warm: 'sıcak',
   hot: 'çok sıcak',
 };
+
+// Sıcaklık bandı için temsilî hissedilen sıcaklık (eski kayıtlarda feelsLikeC yoksa)
+const BAND_FEELS_LIKE: Record<TempBand, number> = { freezing: 0, cold: 7, cool: 13, mild: 19, warm: 25, hot: 32 };
+
+/**
+ * Kaydedilmiş bağlam özetinden puanlayıcının kullanabileceği bağlamı yeniden kurar
+ * (yeniden sıralayıcı eğitimi gibi çevrimdışı işler için; gerçek hava verisi yerine temsilî değerler).
+ */
+export function contextFromSummary(summary: Partial<ContextSummary> | null | undefined): StyleContext {
+  const band = summary?.tempBand || null;
+  const feels = typeof summary?.feelsLikeC === 'number' ? summary.feelsLikeC : band ? BAND_FEELS_LIKE[band] : null;
+  const code = summary?.precipitation === 'snow' ? 71 : summary?.precipitation === 'rain' ? 61 : 2;
+  const weather: WeatherSnapshot | null = feels === null ? null : {
+    locationLabel: '', latitude: 0, longitude: 0, time: '', isForecast: false,
+    temperatureC: feels, feelsLikeC: feels, minC: null, maxC: null,
+    precipitationProbability: summary?.precipitation && summary.precipitation !== 'none' ? 80 : 0,
+    weatherCode: code, condition: '', windKmh: null,
+  };
+  const seasonMonth: Record<string, number> = { ilkbahar: 3, yaz: 6, sonbahar: 9, 'kış': 0 };
+  const month = summary?.season && summary.season in seasonMonth ? seasonMonth[summary.season] : undefined;
+  return buildContext({
+    event: summary?.event || 'Gündelik',
+    eventOverride: summary?.formalityMin && summary?.formalityMax
+      ? { formalityMin: summary.formalityMin, formalityMax: summary.formalityMax, activity: summary.activity, indoor: summary.indoor }
+      : null,
+    activity: summary?.activity,
+    weather,
+    ignoreWeather: weather === null,
+    date: month === undefined ? undefined : new Date(Date.UTC(2026, month, 15)),
+  });
+}

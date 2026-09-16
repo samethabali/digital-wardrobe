@@ -22,6 +22,9 @@ import { CleanRequest, RequestError, sanitizeStylistRequest } from './request.js
 
 export { RequestError };
 
+/** Serbest metin sorgusunun embedding'i için üst sınır; aşılırsa yalnızca meta veri filtresi kullanılır. */
+export const QUERY_EMBEDDING_TIMEOUT_MS = 4000;
+
 export interface GenerateOptions {
   /** full: LLM stilist + RAG; deterministic: yalnızca kural motoru (kota harcamaz) */
   mode: 'full' | 'deterministic';
@@ -29,6 +32,10 @@ export interface GenerateOptions {
   candidateLimit?: number;
   /** Konum gönderilmezse kullanıcının son konumunu kullan */
   useLastLocation?: boolean;
+  /** Hava durumu önceden çözüldüyse (beraber kombin, seyahat planı) tekrar istenmez */
+  weatherOverride?: WeatherResult;
+  /** Kişisel verileri (tercih profili, giyim günlüğü, son gösterilenler) kullanma — ör. arkadaşın gardırobu */
+  anonymous?: boolean;
 }
 
 interface EventOverride {
@@ -170,8 +177,8 @@ export async function runEngine(user: any, request: CleanRequest, options: Gener
     }
   }
 
-  const weather = await resolveWeather(user, request, Boolean(options.useLastLocation));
-  if (weather.resolved && request.location && request.location.type !== 'text') {
+  const weather = options.weatherOverride ?? await resolveWeather(user, request, Boolean(options.useLastLocation));
+  if (!options.weatherOverride && !options.anonymous && weather.resolved && request.location && request.location.type !== 'text') {
     await UserModel.updateOne({ _id: user._id } as any, {
       $set: { lastLocation: { latitude: weather.resolved.latitude, longitude: weather.resolved.longitude, label: weather.resolved.label, updatedAt: new Date() } },
     }).catch(() => undefined);
@@ -203,9 +210,9 @@ export async function runEngine(user: any, request: CleanRequest, options: Gener
   });
 
   const [prefs, recentShown, recentlyWorn, learned] = await Promise.all([
-    loadPreferenceData(user),
-    recentShownOutfits(user),
-    recentlyWornMap(user._id),
+    options.anonymous ? Promise.resolve(null) : loadPreferenceData(user),
+    options.anonymous ? Promise.resolve([] as string[][]) : recentShownOutfits(user),
+    options.anonymous ? Promise.resolve(new Map<string, number>()) : recentlyWornMap(user._id),
     loadReranker(),
   ]);
   const deps: ScoringDeps = {
@@ -260,7 +267,12 @@ export async function generateOutfitsForUser(user: any, rawRequest: unknown, opt
     const queryText = [ctx.personalContext, ctx.eventNotes].filter(Boolean).join('\n');
     if (queryText) {
       try {
-        [queryEmbedding, ruleEmbeddings] = await Promise.all([getTextEmbedding(queryText, 'style_query'), loadRuleEmbeddings()]);
+        // İstek sırasında bilgi tabanı embedding'i hesaplanmaz (computeMissing = 0); önbellek
+        // scripts/embed-knowledge.ts ve günlük zamanlanmış görevle doldurulur.
+        [queryEmbedding, ruleEmbeddings] = await Promise.all([
+          getTextEmbedding(queryText, 'style_query', QUERY_EMBEDDING_TIMEOUT_MS),
+          loadRuleEmbeddings(0),
+        ]);
       } catch {
         queryEmbedding = null;
       }

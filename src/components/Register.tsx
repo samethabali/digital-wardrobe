@@ -3,6 +3,8 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
 import { Sparkles, Mail, Lock, User, ArrowRight, UserPlus } from 'lucide-react';
+import { Button, Card } from './ui/primitives';
+import { Field, Input } from './ui/fields';
 
 export default function Register() {
   const { register } = useAuth();
@@ -45,135 +47,87 @@ export default function Register() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center relative overflow-hidden bg-primary px-4">
-      {/* Decorative Blur Backgrounds */}
-      <div className="absolute top-1/4 left-1/4 -translate-x-1/2 -translate-y-1/2 w-96 h-96 rounded-full bg-indigo-500/20 blur-3xl" />
-      <div className="absolute bottom-1/4 right-1/4 translate-x-1/2 translate-y-1/2 w-96 h-96 rounded-full bg-fuchsia-500/20 blur-3xl" />
-
-      {/* Main card */}
-      <div className="w-full max-w-md glass rounded-3xl p-8 md:p-10 shadow-2xl relative z-10 border border-white/10">
-        
-        {/* Header */}
+    <div className="min-h-dvh flex items-center justify-center bg-canvas px-4 py-8">
+      <div className="w-full max-w-md">
+        {/* Başlık */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center p-3 rounded-2xl bg-indigo-500/10 text-indigo-400 mb-4 animate-pulse">
-            <Sparkles className="w-8 h-8" />
+          <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-accent-soft text-accent mb-3">
+            <Sparkles className="w-6 h-6" />
           </div>
-          <h1 className="text-3xl font-bold bg-gradient-to-r from-indigo-400 via-purple-400 to-fuchsia-400 bg-clip-text text-transparent">
-            Aura'ya Katılın
-          </h1>
-          <p className="text-secondary mt-2 text-sm md:text-base">
-            Kendi dijital gardırobunuzu keşfedin
-          </p>
+          <h1 className="font-display text-3xl text-ink">Aura'ya Katıl</h1>
+          <p className="text-sm text-ink-3 mt-1">Kendi dijital gardırobunu oluştur</p>
         </div>
 
-        {/* Form */}
-        <form onSubmit={handleSubmit} className="space-y-5">
-          <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-secondary mb-2">
-              Ad Soyad
-            </label>
-            <div className="relative">
-              <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-secondary">
-                <User className="w-5 h-5" />
-              </span>
-              <input
+        {/* Kart */}
+        <Card className="p-6 sm:p-8 shadow-card">
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <Field label="Ad Soyad">
+              <Input
                 type="text"
                 required
                 value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Samet Habalı"
-                className="w-full bg-secondary border border-border-color rounded-2xl py-3.5 pl-11 pr-4 text-primary placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duration-200"
+                onChange={e => setName(e.target.value)}
+                placeholder="Adınız Soyadınız"
+                leading={<User className="w-4 h-4" />}
+                autoFocus
               />
-            </div>
-          </div>
+            </Field>
 
-          <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-secondary mb-2">
-              Kullanıcı Adı
-            </label>
-            <div className="relative">
-              <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-secondary">
-                <User className="w-5 h-5" />
-              </span>
-              <input
+            <Field label="Kullanıcı Adı">
+              <Input
                 type="text"
                 required
                 value={username}
-                onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/\s+/g, ''))}
-                placeholder="samethabali"
-                className="w-full bg-secondary border border-border-color rounded-2xl py-3.5 pl-11 pr-4 text-primary placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duration-200"
+                onChange={e => setUsername(e.target.value.toLowerCase().replace(/\s+/g, ''))}
+                placeholder="kullaniciadi"
+                leading={<span className="text-sm font-semibold">@</span>}
               />
-            </div>
-          </div>
+            </Field>
 
-          <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-secondary mb-2">
-              E-posta Adresi
-            </label>
-            <div className="relative">
-              <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-secondary">
-                <Mail className="w-5 h-5" />
-              </span>
-              <input
+            <Field label="E-posta Adresi">
+              <Input
                 type="email"
                 required
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={e => setEmail(e.target.value)}
                 placeholder="ornek@aura.com"
-                className="w-full bg-secondary border border-border-color rounded-2xl py-3.5 pl-11 pr-4 text-primary placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duration-200"
+                leading={<Mail className="w-4 h-4" />}
               />
-            </div>
-          </div>
+            </Field>
 
-          <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-secondary mb-2">
-              Şifre
-            </label>
-            <div className="relative">
-              <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-secondary">
-                <Lock className="w-5 h-5" />
-              </span>
-              <input
+            <Field label="Şifre">
+              <Input
                 type="password"
                 required
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={e => setPassword(e.target.value)}
                 placeholder="En az 6 karakter"
-                className="w-full bg-secondary border border-border-color rounded-2xl py-3.5 pl-11 pr-4 text-primary placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duration-200"
+                leading={<Lock className="w-4 h-4" />}
               />
+            </Field>
+
+            <div className="pt-2">
+              <Button
+                type="submit"
+                variant="primary"
+                size="lg"
+                block
+                loading={loading}
+                icon={<UserPlus className="w-4 h-4" />}
+              >
+                Kayıt Ol
+              </Button>
             </div>
-          </div>
+          </form>
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-gradient-to-r from-indigo-600 to-fuchsia-600 hover:from-indigo-500 hover:to-fuchsia-500 text-white rounded-2xl py-4 font-semibold shadow-lg shadow-indigo-500/25 hover:shadow-indigo-500/35 active:scale-[0.98] transition-all duration-200 flex items-center justify-center gap-2 group disabled:opacity-50 disabled:pointer-events-none mt-2"
-          >
-            {loading ? (
-              <span className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            ) : (
-              <>
-                <span>Kayıt Ol</span>
-                <UserPlus className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
-              </>
-            )}
-          </button>
-        </form>
-
-        {/* Footer */}
-        <div className="mt-8 text-center border-t border-border-color pt-6 text-sm">
-          <p className="text-secondary">
-            Zaten hesabınız var mı?{' '}
-            <Link
-              to="/login"
-              className="text-indigo-400 font-semibold hover:text-indigo-300 transition-colors inline-flex items-center gap-1 group"
-            >
-              Giriş Yapın
-              <ArrowRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
+          <div className="mt-6 pt-5 border-t border-line text-center text-sm text-ink-3">
+            Zaten hesabın var mı?{' '}
+            <Link to="/login" className="text-accent font-semibold hover:underline inline-flex items-center gap-1">
+              Giriş Yap
+              <ArrowRight className="w-3.5 h-3.5" />
             </Link>
-          </p>
-        </div>
-
+          </div>
+        </Card>
       </div>
     </div>
   );

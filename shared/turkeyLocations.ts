@@ -1656,6 +1656,8 @@ export interface LocationSearchResult {
   district?: string;
   lat: number;
   lon: number;
+  /** true: ilçenin kesin koordinatı bilinmiyor, ilin merkez koordinatı kullanıldı */
+  approximate?: boolean;
 }
 
 // Büyük ilçelerin bilinen kesin koordinatları
@@ -1728,13 +1730,15 @@ export function searchTurkishLocations(query: string, limit = 8): LocationSearch
         if (!seen.has(key)) {
           seen.add(key);
           const coordKey = `${dNorm}-${pNorm}`;
-          const coords = KNOWN_DISTRICT_COORDS[coordKey] || { lat: prov.lat, lon: prov.lon };
+          const known = KNOWN_DISTRICT_COORDS[coordKey];
+          const coords = known || { lat: prov.lat, lon: prov.lon };
           results.push({
             label: key,
             province: prov.name,
             district: dist,
             lat: coords.lat,
             lon: coords.lon,
+            ...(known ? {} : { approximate: true }),
           });
           if (results.length >= limit) return results;
         }
@@ -1760,13 +1764,16 @@ export function searchTurkishLocations(query: string, limit = 8): LocationSearch
 /**
  * Metin sorgusunu (örn. "Kadıköy", "Kadıköy, İstanbul", "İzmir") doğrudan koordinata çözer.
  */
-export function resolveTurkishLocation(query: string): { latitude: number; longitude: number; label: string } | null {
+export function resolveTurkishLocation(query: string): { latitude: number; longitude: number; label: string; province: string; district?: string; approximate: boolean } | null {
   const matches = searchTurkishLocations(query, 1);
   if (matches[0]) {
     return {
       latitude: matches[0].lat,
       longitude: matches[0].lon,
       label: matches[0].label,
+      province: matches[0].province,
+      district: matches[0].district,
+      approximate: Boolean(matches[0].approximate),
     };
   }
   return null;

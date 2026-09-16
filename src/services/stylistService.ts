@@ -77,7 +77,8 @@ export async function generateOutfit(
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`
       },
-      body: JSON.stringify({ items: wardrobe, request }),
+      // Gardırop sunucuda okunur; istemci yalnızca isteği gönderir
+      body: JSON.stringify({ request }),
       signal: controller.signal,
     });
 
@@ -101,15 +102,7 @@ export async function generateOutfit(
  * - Canvas API ile ~10-20x sıkıştırma uygulanır
  * - 30 saniyelik timeout uygulanır
  */
-export async function analyzeImageFile(file: File): Promise<{
-  name: string;
-  category: string;
-  subCategory: string;
-  color: string;
-  material: string;
-  style: string;
-  weatherMatch: string[];
-} | null> {
+export async function analyzeImageFile(file: File): Promise<Record<string, any> | null> {
   try {
     // 1) Sıkıştır — mobil kamera fotoğraflarını küçültür, limit sorununu çözer
     const { base64, mimeType } = await compressImageForAnalysis(file);

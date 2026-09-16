@@ -1,10 +1,9 @@
 import { NEUTRAL_COLOR_FAMILIES, ColorFamily } from '../../shared/wardrobe.js';
-import type { WeatherSnapshot } from '../../shared/api.js';
+import type { WardrobeItemDTO, WeatherSnapshot } from '../../shared/api.js';
 import { generateJson } from '../ai/gemini.js';
 import { runEngine } from './generate.js';
 import { sanitizeStylistRequest } from './request.js';
 import type { ScoredOutfit } from './builder.js';
-import type { EngineItem } from './items.js';
 import { styleCompat } from './scoring.js';
 import { describeItemForPrompt } from './explain.js';
 
@@ -74,8 +73,8 @@ function harmonyLabel(pair: CollabPair): string {
 export interface CollabOutcome {
   myOutfit: string[];
   friendOutfit: string[];
-  myItems: EngineItem[];
-  friendItems: EngineItem[];
+  myItems: WardrobeItemDTO[];
+  friendItems: WardrobeItemDTO[];
   compatibilityScore: number;
   collabReason: string;
   styleHarmony: string;
@@ -85,17 +84,18 @@ export interface CollabOutcome {
   warnings: string[];
 }
 
-/** İki gardıroptan birlikte uyumlu iki kombin üretir. Arkadaşın tercih verisi kullanılmaz ve konumu güncellenmez. */
+/**
+ * İki gardıroptan birlikte uyumlu iki kombin üretir. İki kişi aynı etkinliğe gittiği için arkadaşın kombini de
+ * başlatanın konumundaki hava durumuna göre kurulur. Arkadaşın kişisel verileri (tercih profili, giyim günlüğü) kullanılmaz.
+ */
 export async function generateCollab(initiator: any, friend: any, rawRequest: unknown): Promise<CollabOutcome> {
   const request = sanitizeStylistRequest(rawRequest);
   const mineRun = await runEngine(initiator, { ...request, requiredItems: [], lockedItems: [], excludedItems: [] }, { mode: 'deterministic', candidateLimit: 6 });
-  // Arkadaş için yalnızca gardırobu kullanılır: rıza ve tercih profili olmayan bir kullanıcı nesnesiyle çalıştırılır
   const friendRun = await runEngine(
     { _id: friend._id },
     { ...request, location: undefined, requiredItems: [], lockedItems: [], excludedItems: [], recentOutfits: [] },
-    { mode: 'deterministic', candidateLimit: 6 },
+    { mode: 'deterministic', candidateLimit: 6, weatherOverride: mineRun.weather, anonymous: true },
   );
-  // Aynı hava bağlamının kullanılması için arkadaşın koşusunda da başlatanın havası geçerli
   const weather = mineRun.ctx.weather;
 
   const pairs = rankPairs(mineRun.candidates, friendRun.candidates, 5);
@@ -146,8 +146,8 @@ export async function generateCollab(initiator: any, friend: any, rawRequest: un
   return {
     myOutfit: chosen.mine.itemIds,
     friendOutfit: chosen.theirs.itemIds,
-    myItems: chosen.mine.items,
-    friendItems: chosen.theirs.items,
+    myItems: chosen.mine.itemIds.map(id => mineRun.wardrobe.dtoById.get(id)).filter(Boolean),
+    friendItems: chosen.theirs.itemIds.map(id => friendRun.wardrobe.dtoById.get(id)).filter(Boolean),
     compatibilityScore: chosen.score,
     collabReason: reason,
     styleHarmony: label,

@@ -111,6 +111,9 @@ export interface ContextSummary {
   outerwear: 'required' | 'recommended' | 'optional' | 'avoid';
   needsWaterResistant: boolean;
   season: string;
+  /** Hissedilen sıcaklık (hava kullanıldıysa); öğrenme verisinde bağlamı yeniden kurmak için */
+  feelsLikeC?: number | null;
+  indoor?: boolean;
 }
 
 export interface GenerateOutfitResponse {
@@ -129,13 +132,102 @@ export interface GenerateOutfitResponse {
   compatibilityScore: number;
 }
 
+export const FEEDBACK_TYPES = ['saved', 'replaced', 'rerolled', 'worn', 'liked', 'disliked'] as const;
+export type FeedbackType = typeof FEEDBACK_TYPES[number];
+
 export interface FeedbackPayload {
-  type: 'saved' | 'replaced' | 'rerolled' | 'worn' | 'liked' | 'disliked';
+  type: FeedbackType;
   generationId?: string;
   itemIds: string[];
   itemId?: string;
   reason?: FeedbackReason;
   note?: string;
+  context?: ContextSummary;
+}
+
+export interface FeedbackResponse {
+  success: true;
+  /** false: kişiselleştirme rızası olmadığı için geri bildirim saklanmadı */
+  stored: boolean;
+  wearLogId: string | null;
+}
+
+export interface WearLogEntry {
+  id: string;
+  date: string;
+  itemIds: string[];
+  outfitId: string | null;
+  source: 'suggestion' | 'saved' | 'manual';
+  note: string | null;
+  createdAt: string;
+}
+
+export interface WornItemStat {
+  id: string;
+  name: string;
+  category: string;
+  imagePath: string;
+  wearCount: number;
+  lastWornAt: string | null;
+  price: number | null;
+  costPerWear: number | null;
+}
+
+export interface StyleCluster {
+  label: string;
+  size: number;
+  style: string;
+  colorFamily: string | null;
+  sampleItems: { id: string; name: string; imagePath: string }[];
+}
+
+export interface WardrobeStats {
+  totalItems: number;
+  totalWears: number;
+  wearsLast30Days: number;
+  mostWorn: WornItemStat[];
+  leastWorn: WornItemStat[];
+  neverWorn: WornItemStat[];
+  neverWornCount: number;
+  notWornIn90Days: WornItemStat[];
+  costPerWear: WornItemStat[];
+  wardrobeValue: number | null;
+  styleClusters: StyleCluster[];
+  embeddedItems: number;
+}
+
+export interface SimilarItemDTO {
+  id: string;
+  name: string;
+  imagePath: string;
+  similarity: number;
+}
+
+export interface DailyPickResponse {
+  date: string;
+  cached: boolean;
+  result: GenerateOutfitResponse;
+}
+
+export interface TripDay {
+  date: string;
+  weather: WeatherSnapshot | null;
+  outfit: OutfitSuggestion | null;
+  note: string | null;
+}
+
+export interface TripPackingGroup {
+  category: string;
+  label: string;
+  items: (WardrobeItemDTO & { days: number })[];
+}
+
+export interface TripPlanResponse {
+  locationLabel: string;
+  days: TripDay[];
+  packingList: TripPackingGroup[];
+  tips: string[];
+  warnings: string[];
 }
 
 export interface Consents {

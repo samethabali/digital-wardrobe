@@ -1,12 +1,63 @@
 import { v2 as cloudinary } from 'cloudinary';
+import { getCloudinaryCredentials } from './config.js';
 
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'dstqxvqqf',
-  api_key: process.env.CLOUDINARY_API_KEY || '385148218883752',
-  api_secret: process.env.CLOUDINARY_API_SECRET || 'r1mRxhJ1RLHZ1TD3p4dATssa5RE'
-});
+// Kimlik bilgileri yalnızca ortam değişkenlerinden okunur; eksikse görsel işlemleri hata verir.
+const credentials = getCloudinaryCredentials();
+if (credentials) {
+  cloudinary.config(credentials);
+} else {
+  console.warn('[Cloudinary] CLOUDINARY_* ortam değişkenleri tanımlı değil; görsel yükleme ve silme çalışmaz.');
+}
 
 export { cloudinary };
+
+/** Cloudinary'nin tek istekte silebildiği en fazla kayıt sayısı. */
+export const CLOUDINARY_DELETE_BATCH = 100;
+
+type ImageDeleter = (publicIds: string[]) => Promise<unknown>;
+const defaultDeleter: ImageDeleter = (publicIds) => cloudinary.api.delete_resources(publicIds);
+let imageDeleter: ImageDeleter = defaultDeleter;
+
+export function setImageDeleterForTests(fake: ImageDeleter | null) {
+  imageDeleter = fake || defaultDeleter;
+}
+
+/**
+ * Görselleri 100'lük gruplar halinde siler. Bir grup başarısız olsa da diğerleri denenir;
+ * silinemeyen kimlikler döndürülür (hesap silme bunları loglar, işlemi durdurmaz).
+ */
+export async function deleteImages(publicIds: string[]): Promise<{ deleted: number; failed: string[] }> {
+  const unique = Array.from(new Set(publicIds.filter(Boolean)));
+  const failed: string[] = [];
+  let deleted = 0;
+  for (let i = 0; i < unique.length; i += CLOUDINARY_DELETE_BATCH) {
+    const batch = unique.slice(i, i + CLOUDINARY_DELETE_BATCH);
+    try {
+      await imageDeleter(batch);
+      deleted += batch.length;
+    } catch (err) {
+      console.error('[Cloudinary] Görsel grubu silinemedi:', err);
+      failed.push(...batch);
+    }
+  }
+  return { deleted, failed };
+}
+
+type ImageUploader = (dataUri: string, options: { folder: string; public_id: string }) => Promise<string>;
+const defaultUploader: ImageUploader = async (dataUri, options) => {
+  const uploaded = await cloudinary.uploader.upload(dataUri, { ...options, overwrite: true, format: 'png' });
+  return uploaded.secure_url;
+};
+let imageUploader: ImageUploader = defaultUploader;
+
+export function setImageUploaderForTests(fake: ImageUploader | null) {
+  imageUploader = fake || defaultUploader;
+}
+
+/** PNG görseli kullanıcının klasörüne yükler ve güvenli adresini döndürür. */
+export function uploadPng(dataUri: string, options: { folder: string; public_id: string }): Promise<string> {
+  return imageUploader(dataUri, options);
+}
 
 // Cloudinary public_id helper
 export function getPublicIdFromUrl(url: string): string | null {
@@ -50,11 +101,13 @@ export function getOwnedPublicId(url: string | undefined | null, userId: string)
 // Sunucu yalnızca kendi Cloudinary hesabımızdaki görselleri indirebilir (SSRF koruması):
 // aksi halde veritabanındaki bir URL üzerinden sunucuya rastgele adresler çektirilebilir.
 export function isOwnCloudinaryUrl(url: string): boolean {
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME?.trim();
+  if (!cloudName) return false;
   try {
     const parsed = new URL(url);
     return (parsed.protocol === 'https:' || parsed.protocol === 'http:') &&
       parsed.hostname === 'res.cloudinary.com' &&
-      parsed.pathname.startsWith(`/${process.env.CLOUDINARY_CLOUD_NAME}/`);
+      parsed.pathname.startsWith(`/${cloudName}/`);
   } catch {
     return false;
   }

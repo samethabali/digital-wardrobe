@@ -40,12 +40,12 @@ export const SNOW_CODES = new Set([71, 73, 75, 77, 85, 86]);
 export class WeatherError extends Error {}
 
 type Fetcher = (url: string) => Promise<{ ok: boolean; status: number; json: () => Promise<any> }>;
-let isCustomFetcher = false;
 let fetcher: Fetcher = (url) => fetch(url, { signal: AbortSignal.timeout(8000) });
 
 export function setWeatherFetcherForTests(fake: Fetcher | null) {
-  isCustomFetcher = Boolean(fake);
   fetcher = fake || ((url) => fetch(url, { signal: AbortSignal.timeout(8000) }));
+  geocodeCache.clear();
+  forecastCache.clear();
 }
 
 export interface ResolvedLocation {
@@ -81,9 +81,23 @@ async function geocode(name: string): Promise<GeoResult[]> {
 }
 
 /**
+ * Yerel il/ilçe veritabanındaki eşleşmeyi döndürür. İlçenin kesin koordinatı yoksa (il merkezi kullanılmışsa)
+ * Open-Meteo'dan ilçenin kendi koordinatı istenir; servis yanıt vermezse yaklaşık konumla devam edilir.
+ */
+async function refineLocal(local: NonNullable<ReturnType<typeof resolveTurkishLocation>>): Promise<ResolvedLocation> {
+  const approximate: ResolvedLocation = { latitude: local.latitude, longitude: local.longitude, label: local.label };
+  if (!local.approximate || !local.district) return approximate;
+  try {
+    return (await findDistrict(local.province, local.district)) || approximate;
+  } catch {
+    return approximate;
+  }
+}
+
+/**
  * Konum girdisini koordinata çevirir.
- * Önce yerel 81 il ve 973 ilçe veritabanından bakar (0 ms gecikme, %100 doğruluk).
- * Bulunamazsa Open-Meteo Geocoding servisine başvurur.
+ * Önce yerel 81 il / 973 ilçe veritabanına bakılır; ilçenin kesin koordinatı yoksa Open-Meteo ile netleştirilir.
+ * Yerelde bulunamayan yerler için doğrudan Open-Meteo Geocoding (countryCode=TR) kullanılır.
  */
 export async function resolveLocation(input: LocationInput | string | undefined | null): Promise<ResolvedLocation | null> {
   if (!input) return null;
@@ -100,45 +114,39 @@ export async function resolveLocation(input: LocationInput | string | undefined 
     const district = (location.district || '').trim();
     if (!province) return null;
 
-    if (!isCustomFetcher) {
-      // Yerel veritabanında anında ara
-      const placeQuery = district ? `${district}, ${province}` : province;
-      const local = resolveTurkishLocation(placeQuery) || (district ? resolveTurkishLocation(district) : null) || resolveTurkishLocation(province);
-      if (local) return local;
-    }
+    // İlçe tek başına aranmaz: aynı adlı yer başka bir ilde de olabilir
+    const local = (district ? resolveTurkishLocation(`${district}, ${province}`) : null)
+      || resolveTurkishLocation(province);
+    const localMatchesRequest = local && normalizeTr(local.province) === normalizeTr(province)
+      && (!district || normalizeTr(local.district) === normalizeTr(district));
+    if (local && localMatchesRequest) return refineLocal(local);
 
     if (district) {
       const found = await findDistrict(province, district);
       if (found) return found;
     }
-    return findProvince(province);
+    return (await findProvince(province)) || (local && normalizeTr(local.province) === normalizeTr(province)
+      ? { latitude: local.latitude, longitude: local.longitude, label: local.label }
+      : null);
   }
 
   const query = (location.query || '').trim();
   if (query.length < 2) return null;
 
-  // 1. Yerel Türkiye il/ilçe veritabanında anında ara
-  if (!isCustomFetcher) {
-    const localMatch = resolveTurkishLocation(query);
-    if (localMatch) return localMatch;
-  }
-
   const parts = query.split(',').map(p => p.trim()).filter(Boolean);
   if (parts.length >= 2) {
     const [first, second] = parts;
-    if (!isCustomFetcher) {
-      const localCombo = resolveTurkishLocation(`${first}, ${second}`)
-        || resolveTurkishLocation(`${second}, ${first}`)
-        || resolveTurkishLocation(first)
-        || resolveTurkishLocation(second);
-      if (localCombo) return localCombo;
-    }
-
+    // "İlçe, İl" ve eski istemcilerin "İl, İlçe" sırası
+    const local = resolveTurkishLocation(`${first}, ${second}`) || resolveTurkishLocation(`${second}, ${first}`);
+    if (local?.district) return refineLocal(local);
     return (await findDistrict(second, first))
       || (await findDistrict(first, second))
       || (await findProvince(second))
       || (await findProvince(first));
   }
+
+  const local = resolveTurkishLocation(query);
+  if (local) return refineLocal(local);
   const results = await geocode(query);
   return results[0] ? toResolved(results[0], query) : null;
 }

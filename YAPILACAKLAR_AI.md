@@ -28,8 +28,24 @@
 - [x] Sabit şifreli admin hesabı oluşturma kaldırıldı.
 - [x] `PUT /api/wardrobe/:id` ve `PUT /api/outfits/:id` beyaz listeye alındı; Cloudinary silme sahiplik kontrolüne bağlandı; görsel indirme yalnızca kendi Cloudinary hesabımızla sınırlandı.
 - [x] MongoDB tabanlı istek sınırlama eklendi; 400 hatalarında gereksiz model denemesi kaldırıldı; `gemini-2.5-pro` yedek listesinden çıkarıldı; `/api/debug-models` canlıda kapatıldı.
-- [ ] **Bekleyen:** Vercel ortam değişkenlerine `JWT_SECRET` ekle (eklenmezse canlı API başlamaz).
+- [ ] **Bekleyen:** Vercel ortam değişkenlerine `JWT_SECRET`, `MONGODB_URI`, `GEMINI_API_KEY`, `CLOUDINARY_*` ekle. Kodda artık yedek değer yok; eksik değişkende ilgili uç noktalar 503 döner.
 - [ ] **Bekleyen:** `samet@aura.com` canlıda varsa şifresini değiştir.
+- [ ] **Bekleyen (kullanıcı kararı):** Herkese açık depoya gönderilen MongoDB şifresi, Cloudinary secret, Gemini anahtarı ve eski JWT yedek anahtarı hâlâ geçerli. Anahtarlar yenilenmedikçe git geçmişini temizlemek bu değerleri korumaz.
+
+### İnceleme sonrası düzeltmeler (16 Eylül 2026)
+
+- [x] Koda gömülen gizli değer yedekleri kaldırıldı (`backend/config.ts`); JWT anahtarı yine zorunlu. Test: yayınlanmış eski yedek anahtarla üretilen token reddediliyor.
+- [x] `api/index.js` gizli değerler olmadan yeniden üretildi; paketin kaynakla uyumunu `tests/bundle.test.ts` denetliyor.
+- [x] `OutfitPlanner.tsx` tip hataları (`LocationSearchResult.name`) giderildi; `tsc` temiz.
+- [x] `/api/feedback`: doğrulama, istek sınırı, kişiselleştirme rızası ve `recordFeedback` bağlantısı; giyim tarihi Türkiye saatine göre.
+- [x] Rıza uç noktası üç rızayı da yönetiyor; geri çekilen rızanın verisi aynı istekte siliniyor; rıza vermek için güncel aydınlatma metni sürümü gerekiyor.
+- [x] Hesap silme: giyim günlüğü, beraber kombinler (iki taraf), bildirim abonelikleri ve arka planı kaldırılmış görseller dahil; görseller 100'lük gruplarla siliniyor.
+- [x] Yerel il/ilçe veritabanı testte de kullanılıyor; koordinatı yaklaşık ilçeler Open-Meteo ile netleştiriliyor.
+- [x] Beraber kombinde arkadaşın kombini de aynı hava durumuna göre kuruluyor; arkadaşın kişisel verisi kullanılmıyor.
+- [x] Kombin isteği sırasında bilgi tabanı embedding'i hesaplanmıyor (önbellek betik ve günlük görevle dolduruluyor).
+- [x] `server.ts` test edilebilir modüllere ayrıldı (`backend/app.ts`, `backend/routes/*`); bellek içi MongoDB ile 79 test.
+- [x] Parça güncelleme ve yükleme artık yeni alanları (resmiyet, sıcak tutma, renk ailesi, mevsim, fiyat…) kaydediyor; önceden yalnızca eski alanlar saklanıyordu.
+- [x] Sonuç ekranındaki puan dökümü gerçek bileşenlerle gösteriliyor (önceden olmayan alanlar okunuyordu); Değiştir/Yenile/Kilit akışı formdaki isteği değiştirmiyor.
 
 ---
 
@@ -213,7 +229,7 @@ Amaç: Diğer tüm değişikliklerin etkisini **ölçebilmek** ve kapanan modell
   - Model adlarını ortam değişkeninden okunabilir yap (yeniden deploy gerekmeden değiştirmek için).
   - **Kabul:** Yedek listede anahtarda bulunmayan model kalmaz.
 
-- [ ] **0.2 Gemini 3.x'e geçiş (0.3'ten sonra, ölçerek)**
+- [ ] **0.2 Gemini 3.x'e geçiş (0.3'ten sonra, ölçerek)** — *Model listeleri 3.x'e geçirildi; `npm run eval -- --llm` ile 2.5 Flash karşılaştırması henüz çalıştırılmadı (kota harcar).*
   - Kombin: `gemini-3.6-flash` ve `gemini-3.8-flash` adaylarını değerlendirme setinde karşılaştır.
   - Görsel etiketleme: `gemini-3.5-flash-lite`, yedek `gemini-3.1-flash-lite`.
   - Tüm `temperature` ayarlarını kaldır, her görev için `thinkingLevel` ekle.
@@ -224,6 +240,7 @@ Amaç: Diğer tüm değişikliklerin etkisini **ölçebilmek** ve kapanan modell
   - Otomatik metrikler: geçersiz ID, eksik zorunlu kategori, yasaklı parça, zorunlu parça eksikliği, hava uyumsuzluğu (ör. 5°C'de dış giyim yok), aynı istekte tekrar oranı, süre, token.
   - Sonuçları bir tabloya yazan `scripts/eval-outfits.ts`; her model/prompt değişikliğinde çalıştır.
   - **Kabul:** Tek komutla çalışıyor, önceki çalıştırmayla karşılaştırma tablosu üretiyor.
+  - *Durum:* `npm run eval` (kural motoru) ve `npm run eval -- --llm [--no-examples] [--limit N]`. Sonuçlar `scripts/eval/results/`; kötüye gidişte çıkış kodu 1. İlk ölçüm: 30 durum, 90 kombin, geçersiz oranı 0, ortalama puan 93.4.
 
 - [x] **0.4 Zaman aşımı ve gözlemlenebilirlik**
   - Her Gemini çağrısına `config.abortSignal` ile zaman aşımı (ör. 20 sn); tüm yedek zinciri için toplam süre bütçesi (Vercel fonksiyon sınırının altında).
@@ -233,7 +250,7 @@ Amaç: Diğer tüm değişikliklerin etkisini **ölçebilmek** ve kapanan modell
 
 - [x] **0.5 SDK yükseltmesi**
   - `@google/genai` 1.51.0 → 2.x; Vercel'de Node 22+.
-  - `list_models_check.ts`'i `for await` ile düzelt (`scripts/list-models.ts`).
+  - `list_models_check.ts`'i `for await` ile düzelt (`scripts/list-models.ts`). *Yapıldı; koddaki model listelerini de kontrol ediyor.*
   - **Kabul:** `tsc` ve değerlendirme seti geçiyor.
 
 ---
@@ -363,12 +380,12 @@ Amaç: [Hedef mimari](#hedef-mimari)'yi hayata geçirmek. Her adımın etkisini 
   - Getirilen 5–8 kural prompt'a girsin; hangi kuralların kullanıldığı loglansın.
   - **Kabul:** Kelime parçası eşleştirmesi tamamen kalkmış; 1.4'teki senaryo testleri geçiyor.
 
-- [ ] **2.7 RAG: örnek kombinler (few-shot)**
+- [x] **2.7 RAG: örnek kombinler (few-shot)** — *Kişisel ve küratörlü örnekler prompt'a giriyor; karşılaştırma için `npm run eval -- --llm --no-examples` hazır, ölçüm henüz çalıştırılmadı.*
   - **Kişisel örnekler:** kullanıcının kaydettiği, giydiği ve beğendiği kombinlerden bağlama en benzer 2–3 tanesi prompt'a örnek olarak girsin.
   - **Küratörlü örnekler (opsiyonel):** stil kurallarına uygun, elle hazırlanmış örnek kombin kütüphanesi. Hazır veri seti kullanılacaksa (Polyvore, Pinterest vb.) lisansını kontrol et.
   - **Kabul:** Değerlendirme setinde örnekli ve örneksiz sürüm karşılaştırılmış.
 
-- [ ] **2.8 Parça embedding'leri ve vektör arama**
+- [x] **2.8 Parça embedding'leri ve vektör arama** — *Yüklemede görsel+metin embedding'i, benzer parça uyarısı, "Bu parçayla ne giyerim?", stil kümeleri ve eksikleri tamamlama uç noktası. Tek kullanıcının gardırobu küçük olduğu için Atlas Vector Search yerine bellek içi kosinüs benzerliği kullanılıyor.*
   - Her parça için `gemini-embedding-2` ile görsel + metin embedding'i (768 boyut yeterli olabilir; ölç).
   - MongoDB Atlas Vector Search indeksi.
   - Kullanımlar:
@@ -406,17 +423,17 @@ Amaç: Piyasadaki en iyi uygulamaları farklılaştıran geri bildirim döngüs�
   - Tekrar cezası ve parça rotasyonu puanlayıcıya bağlansın.
   - İstatistiklere: en çok/en az giyilen parçalar, hiç giyilmeyenler, giyim başı maliyet (fiyat girilirse).
 
-- [ ] **3.3 Tercih profili**
+- [x] **3.3 Tercih profili** — *Geri bildirim uç noktasına bağlandı; kabul testi `tests/units.test.ts` (reddedilen rengin öneri oranı düşüyor).*
   - Olaylardan özellik bazlı eğilim puanları: renk ailesi, stil, kesim, resmiyet (ör. basit sayım veya üstel azalan ağırlıklı ortalama).
   - Profil puanlayıcıya "kişisel tercih" bileşeni olarak girsin.
   - Periyodik olarak LLM ile 2–3 cümlelik tercih özeti üret; prompt'a bu özet girsin.
   - **Kabul:** Belirli bir rengi sürekli reddeden kullanıcıda o rengin öneri oranı ölçülebilir şekilde düşüyor.
 
-- [ ] **3.4 Günlük öneri ve planlama**
+- [x] **3.4 Günlük öneri ve planlama** — *Günün kombini kartı (`/api/daily-pick`), web push + Vercel Cron (`/api/cron/daily`, 08:00 TSİ), tarih/saatli kombin planlama ve seyahat bavulu (`/api/trips/plan`). E-posta eklenmedi.*
   - Sabah saatinde o günün tahminine göre hazır kombin (Whering W-Pick / Acloset benzeri); web push veya e-posta.
   - İleri tarihli etkinlik planlama (ör. hafta sonu düğün) ve seyahat için bavul listesi.
 
-- [x] **3.5 Veri gizliliği (KVKK)**
+- [x] **3.5 Veri gizliliği (KVKK)** — *Aydınlatma metni (`shared/privacy.ts`) ve rıza anahtarları Hesap Ayarları'nda; hukuki metin bir uzmana kontrol ettirilmeli.*
   - Geri bildirim, giyim geçmişi ve tercih profili için açık rıza metni ve aydınlatma.
   - Hesap silmede tüm bu verilerin de silinmesi.
 
@@ -424,20 +441,20 @@ Amaç: Piyasadaki en iyi uygulamaları farklılaştıran geri bildirim döngüs�
 
 ## Faz 4 – Görselleştirme ve ileri seviye
 
-- [ ] **4.1 Arka plan kaldırma ve kombin kolajı**
+- [x] **4.1 Arka plan kaldırma ve kombin kolajı** — *Gemini 2.5 Flash segmentasyonu (`POST /api/wardrobe/:id/cutout`), parça detayında düğme, sonuç ekranında kolaj görünümü.*
   - Yüklenen parça görsellerinde arka planı kaldır. Seçenekler: Cloudinary'nin arka plan kaldırma eklentisi (ek maliyet) ya da bir segmentasyon modeli (Alta, SAM 3 kullanıyor). Gemini kılavuzuna göre görüntü segmentasyonu Gemini 3 Pro/Flash'ta desteklenmiyor, 2.5 Flash'ta var.
   - Kombin sonucu için temiz "flat-lay" kolaj (istemcide kodla, ucuz).
 
-- [ ] **4.2 Sanal deneme (opsiyonel, premium)**
+- [ ] **4.2 Sanal deneme (opsiyonel, premium)** — *Yapılmadı: görsel üreten modeller ücretsiz katmanda yok.*
   - `gemini-3.1-flash-image` (Nano Banana 2) ile kullanıcı fotoğrafı + kombin parçaları → deneme görseli.
   - Görsel başına maliyet yüksek; yalnızca istek üzerine, sınırlı kotayla.
   - Kullanıcı fotoğrafı için açık rıza ve saklama politikası (KVKK).
 
-- [ ] **4.3 Kendi uyum modeli (uzun vade)**
+- [ ] **4.3 Kendi uyum modeli (uzun vade)** — *İlk adım hazır: `scripts/train-reranker.ts` geri bildirimlerden lojistik regresyon eğitiyor; en az 200 etiketli kombin ve doğrulama AUC ≥ 0.6 olmadan model kaydedilmiyor. Embedding tabanlı model için veri bekleniyor.*
   - Faz 3 verisi yeterli hale gelince (binlerce kaydedilen/giyilen/reddedilen kombin): önce embedding'ler üzerinde hafif bir sınıflandırıcı, sonra OutfitTransformer benzeri bir model.
   - Puanlayıcıda ek sinyal olarak başla; değerlendirme setiyle karşılaştır.
 
-- [ ] **4.4 Kişisel renk ve kesim analizi (opsiyonel)**
+- [x] **4.4 Kişisel renk ve kesim analizi (opsiyonel)** — *Kişisel renk analizi (açık rıza, fotoğraf saklanmıyor) ve stil profili (sevilen/kaçınılan kesimler, sevilmeyen renkler). Vücut tipi analizi bilinçli olarak eklenmedi.*
   - Acloset'teki gibi kişisel renk paleti ve vücut tipine uygun kesim önerileri; yalnızca açık rızayla ve hassas dille.
 
 ---

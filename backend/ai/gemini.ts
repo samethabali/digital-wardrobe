@@ -4,6 +4,7 @@ import {
   AiTask, modelsFor, thinkingConfigFor, DEFAULT_TIMEOUTS_MS, DEFAULT_TOTAL_BUDGET_MS,
   EMBEDDING_MODEL, EMBEDDING_DIMENSIONS,
 } from './models.js';
+import { getGeminiApiKey } from '../config.js';
 
 export type AiErrorCode = 'unavailable' | 'bad_request' | 'blocked' | 'invalid_output' | 'timeout' | 'config';
 
@@ -25,7 +26,12 @@ let client: AiClient | null = null;
 
 function getClient(): AiClient {
   if (!client) {
-    const apiKey = process.env.GEMINI_API_KEY || 'AIzaSyCD0LspfgsLR7GKEBeUIt8vgTBM14jd9pY';
+    let apiKey: string;
+    try {
+      apiKey = getGeminiApiKey();
+    } catch (err) {
+      throw new AiError('config', 'Yapay zeka servisi yapılandırılmamış.');
+    }
     const genai = new GoogleGenAI({ apiKey });
     client = {
       generateContent: (params) => genai.models.generateContent(params),

@@ -1,0 +1,19 @@
+{
+  "name": "Aura · Akıllı Gardırop",
+  "short_name": "Aura",
+  "description": "Gardırobunu dijitalleştir, havaya ve etkinliğe göre kombin önerisi al.",
+  "lang": "tr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f5f1eb",
+  "theme_color": "#f5f1eb",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Kombin oluştur", "url": "/olustur" },
+    { "name": "Günün kombini", "url": "/?gunluk=1" }
+  ]
+}

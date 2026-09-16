@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
 import { WardrobeItem } from '../types';
+import { missingFields } from '../../shared/wardrobe';
 import { useNotification } from './NotificationContext';
 import { useAuth } from './AuthContext';
 
@@ -15,6 +16,7 @@ interface EnrichState {
 
 interface WardrobeContextType {
   items: WardrobeItem[];
+  total: number;
   loading: boolean;
   page: number;
   hasMore: boolean;
@@ -22,7 +24,7 @@ interface WardrobeContextType {
   enrichState: EnrichState;
   fetchWardrobe: (pageNum?: number, append?: boolean) => Promise<void>;
   handleEnrich: () => void;
-  handleDeleteItem: (id: string) => Promise<void>;
+  handleDeleteItem: (id: string) => Promise<boolean>;
   setItems: React.Dispatch<React.SetStateAction<WardrobeItem[]>>;
 }
 
@@ -35,16 +37,14 @@ export function WardrobeProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
+  const [total, setTotal] = useState(0);
 
   const [enrichState, setEnrichState] = useState<EnrichState>({
     running: false, total: 0, current: 0, currentName: '', enriched: 0, done: false, message: ''
   });
 
-  const missingCount = items.filter(i => {
-    const needsFitPattern = ['top', 'bottom', 'outerwear'].includes(i.category);
-    return !i.color || !i.style || !i.material || !(i as any).subCategory ||
-      (needsFitPattern && (!(i as any).pattern || !(i as any).fit));
-  }).length;
+  // Sunucudaki "AI ile Tamamla" ile aynı kural: öneri motorunun ihtiyaç duyduğu alanlardan biri boşsa eksik
+  const missingCount = items.filter(i => missingFields(i as any).length > 0).length;
 
   const fetchWardrobe = useCallback(async (pageNum = 1, append = false) => {
     if (!token) {
@@ -71,6 +71,7 @@ export function WardrobeProvider({ children }: { children: ReactNode }) {
         setItems(data.items || []);
       }
       setHasMore(data.hasMore);
+      setTotal(typeof data.total === 'number' ? data.total : 0);
       setPage(data.page);
     } catch (error) {
       console.error('Failed to fetch wardrobe:', error);
@@ -80,23 +81,23 @@ export function WardrobeProvider({ children }: { children: ReactNode }) {
     }
   }, [token]);
 
-  const handleDeleteItem = async (id: string) => {
-    const ok = await askConfirm('Silmeyi Onayla', 'Bu kıyafeti silmek istediğinize emin misiniz? (Bu işlem geri alınamaz)');
-    if (!ok) return;
-
+  const handleDeleteItem = async (id: string): Promise<boolean> => {
+    const ok = await askConfirm('Parçayı sil', 'Bu parça ve görseli kalıcı olarak silinecek; kayıtlı kombinlerden de çıkarılacak.');
+    if (!ok || !token) return false;
     try {
-      if (!token) return;
-      const response = await fetch(`/api/wardrobe/${id}`, {
+      const response = await fetch(`/api/wardrobe/${encodeURIComponent(id)}`, {
         method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+        headers: { 'Authorization': `Bearer ${token}` }
       });
       if (!response.ok) throw new Error();
-      notify('Kıyafet silindi', 'success');
-      fetchWardrobe(1, false);
+      // Listeyi yeniden çekmeden anında güncelle (sayfalama konumu korunur)
+      setItems(prev => prev.filter(item => item.id !== id));
+      setTotal(prev => Math.max(0, prev - 1));
+      notify('Parça silindi.', 'success');
+      return true;
     } catch {
       notify('Silme başarısız.', 'error');
+      return false;
     }
   };
 
@@ -166,7 +167,7 @@ export function WardrobeProvider({ children }: { children: ReactNode }) {
   }, [token, fetchWardrobe]);
 
   return (
-    <WardrobeContext.Provider value={{ items, loading, page, hasMore, missingCount, enrichState, fetchWardrobe, handleEnrich, handleDeleteItem, setItems }}>
+    <WardrobeContext.Provider value={{ items, total, loading, page, hasMore, missingCount, enrichState, fetchWardrobe, handleEnrich, handleDeleteItem, setItems }}>
       {children}
     </WardrobeContext.Provider>
   );

@@ -5,7 +5,7 @@ import {
   colorFamilyFromName, deriveWeatherMatch, isValidHex, missingFields,
 } from '../shared/wardrobe.js';
 import { AiError, generateJson } from './ai/gemini.js';
-import { cloudinary, downloadOwnImage, getPublicIdFromUrl, withTransformation } from './cloudinary.js';
+import { downloadOwnImage, getPublicIdFromUrl, uploadPng, withTransformation } from './cloudinary.js';
 
 const { PNG } = pngjs;
 
@@ -261,11 +261,8 @@ export async function createCutout(item: any, userId: string): Promise<string> {
 
   const publicId = getPublicIdFromUrl(item.imagePath);
   const baseName = publicId ? publicId.split('/').pop() : `item_${Date.now()}`;
-  const uploaded = await cloudinary.uploader.upload(`data:image/png;base64,${cutout.toString('base64')}`, {
+  return uploadPng(`data:image/png;base64,${cutout.toString('base64')}`, {
     folder: `digital_wardrobe/${userId}`,
     public_id: `${baseName}_cutout`,
-    overwrite: true,
-    format: 'png',
   });
-  return uploaded.secure_url;
 }

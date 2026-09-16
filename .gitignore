@@ -8,3 +8,6 @@ coverage/
 !.env.example
 dolap/
 dolap_metadata.json
+
+# Değerlendirme çıktıları (yerel)
+scripts/eval/results/
