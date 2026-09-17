@@ -1,0 +1,27 @@
+[Unit]
+Description=Aura arka plan kaldirma servisi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aura-cutout
+Group=aura-cutout
+WorkingDirectory=/opt/aura-cutout
+EnvironmentFile=/etc/aura-cutout.env
+Environment=NODE_ENV=production
+Environment=MODEL_CACHE_DIR=/var/lib/aura-cutout/models
+ExecStart=/usr/local/bin/node dist/server.mjs
+Restart=always
+RestartSec=5
+# Model yüklenip ısınana kadar (~15 sn, ilk kurulumda indirme dahil birkaç dakika)
+TimeoutStartSec=600
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/aura-cutout
+
+[Install]
+WantedBy=multi-user.target

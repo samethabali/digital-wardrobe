@@ -70,6 +70,30 @@ test('parça güncelleme: yeni alanlar düzenlenebilir, sunucu alanları ve geç
   assert.equal((await t.api('PUT', `/api/wardrobe/${doc.id}`, { token: other.token, body: { name: 'çalıntı' } })).status, 404);
 });
 
+test('parça güncelleme: form gövdesindeki değişmeyen eski değerler kaydı engellemez ve embedding silinmez', async () => {
+  const u = await t.createUser('EskiKayit');
+  const [base] = ownedItems(WARDROBES.kucuk.slice(0, 1), u.id);
+  const doc = { ...base, id: 'item_eski_kayit' };
+  await t.models.ItemModel.collection.insertOne({
+    ...doc, userId: new (await import('mongoose')).default.Types.ObjectId(u.id),
+    category: 'ayakkabı', pattern: 'yırtık', fit: 'düz', embedding: fakeVector('eski'), embeddingModel: 'gemini-embedding-2',
+  } as any);
+
+  // Ön yüz formun tamamını gönderir; kullanıcı yalnızca fiyatı değiştirdi
+  const res = await t.api('PUT', `/api/wardrobe/${doc.id}`, {
+    token: u.token, body: { name: doc.name, category: 'ayakkabı', pattern: 'yırtık', fit: 'düz', price: 300 },
+  });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  const saved: any = await t.models.ItemModel.findOne({ id: doc.id } as any).select('+embedding').lean();
+  assert.equal(saved.price, 300);
+  assert.ok(saved.embedding?.length, 'tarif değişmediyse embedding korunmalı');
+
+  const { normalizeLegacyItemValues } = await import('../backend/migration.js');
+  assert.ok(await normalizeLegacyItemValues() >= 1);
+  const normalized: any = await t.models.ItemModel.findOne({ id: doc.id } as any).lean();
+  assert.deepEqual([normalized.category, normalized.pattern, normalized.fit], ['shoes', 'düz', 'normal']);
+});
+
 test('yükleme: analizdeki yeni alanlar kaydedilir, embedding hesaplanır, aynı parça ikinci kez eklenince uyarılır', async () => {
   const u = await t.createUser('Yukleyen');
   await serveImage(solidPng(8, 8, [40, 80, 200, 255]), 'image/jpeg');
@@ -165,6 +189,60 @@ test('arka plan kaldırma: maske uygulanır, şeffaf PNG kullanıcının klasör
   const failing = await t.api('POST', `/api/wardrobe/${doc.id}/cutout`, { token: u.token });
   assert.equal(failing.status, 503, 'AI yanıt vermezse anlamlı hata');
   assert.equal((await t.api('POST', '/api/wardrobe/yok/cutout', { token: u.token })).status, 404);
+});
+
+test('arka plan kaldırma (servis): model sunucusu çağrılır, dönen PNG doğrulanıp yüklenir; hatalar anlamlı', async () => {
+  const u = await t.createUser('ServisleKesen');
+  const [base] = ownedItems(WARDROBES.kucuk.slice(0, 1), u.id);
+  const doc = { ...base, id: 'item_servis_kesim' };
+  await t.models.ItemModel.create(doc);
+  const vision = await import('../backend/vision.js');
+  process.env.CUTOUT_SERVICE_URL = 'https://kesim.example/';
+  process.env.CUTOUT_SERVICE_TOKEN = 'x'.repeat(40);
+  let aiCalls = 0;
+  (await gemini()).setAiClientForTests({ generateContent: async () => { aiCalls++; throw new Error('çağrılmamalı'); }, embedContent: async () => null });
+  (await cloudinary()).setImageUploaderForTests(async (_dataUri, opts) => `https://res.cloudinary.com/${TEST_CLOUD}/image/upload/v4/${opts.folder}/${opts.public_id}.png`);
+
+  const cutout = new PNG({ width: 10, height: 10 });
+  for (let i = 0; i < 100; i++) cutout.data.set([200, 30, 30, i % 10 < 5 ? 255 : 0], i * 4);
+  const pngBytes = PNG.sync.write(cutout);
+  const reply = (status: number, body: Buffer | object) => async (url: string, init: any) => {
+    calls.push({ url, auth: init.headers.Authorization, body: JSON.parse(init.body) });
+    return {
+      ok: status < 400, status,
+      arrayBuffer: async () => (Buffer.isBuffer(body) ? body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) : new ArrayBuffer(0)) as ArrayBuffer,
+      json: async () => body,
+    };
+  };
+  const calls: any[] = [];
+  try {
+    vision.setCutoutServiceFetcherForTests(reply(200, pngBytes));
+    const res = await t.api('POST', `/api/wardrobe/${doc.id}/cutout`, { token: u.token });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.ok(res.body.item.cutoutImagePath.endsWith('_cutout.png'));
+    assert.equal(calls[0].url, 'https://kesim.example/cutout');
+    assert.equal(calls[0].auth, `Bearer ${'x'.repeat(40)}`);
+    assert.ok(calls[0].body.imageUrl.includes('/upload/f_jpg,q_90,w_1024/'), calls[0].body.imageUrl);
+    assert.equal(aiCalls, 0, 'servis varken Gemini çağrılmamalı');
+
+    vision.setCutoutServiceFetcherForTests(reply(503, { error: 'meşgul' }));
+    const busy = await t.api('POST', `/api/wardrobe/${doc.id}/cutout`, { token: u.token });
+    assert.equal(busy.status, 503);
+    assert.match(busy.body.error, /başka görseller işleniyor/);
+
+    vision.setCutoutServiceFetcherForTests(reply(200, solidPng(4, 4, [1, 2, 3, 255])));
+    assert.equal((await t.api('POST', `/api/wardrobe/${doc.id}/cutout`, { token: u.token })).status, 502, 'şeffaf alanı olmayan görsel kabul edilmemeli');
+
+    vision.setCutoutServiceFetcherForTests(async () => { throw Object.assign(new Error('bağlantı reddedildi'), { name: 'TypeError' }); });
+    const down = await t.api('POST', `/api/wardrobe/${doc.id}/cutout`, { token: u.token });
+    assert.equal(down.status, 503);
+    assert.match(down.body.error, /servisi şu an yanıt vermiyor/);
+  } finally {
+    delete process.env.CUTOUT_SERVICE_URL;
+    delete process.env.CUTOUT_SERVICE_TOKEN;
+    vision.setCutoutServiceFetcherForTests(null);
+    (await gemini()).setAiClientForTests(unavailableAi);
+  }
 });
 
 test('"Bu parçayla ne giyerim?": seçilen parça her kombinde, AI kotası harcanmaz', async () => {

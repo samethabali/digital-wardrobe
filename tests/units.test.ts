@@ -300,3 +300,28 @@ test('konum araması: yaklaşık koordinatlı ilçeler işaretlenir', () => {
   assert.equal(kas.district, 'Kaş');
   assert.equal(kas.approximate, true);
 });
+
+test('arka plan maskesi: askı teli ve kopuk küçük nesneler temizlenir, ayrık büyük parçalar (ayakkabı çifti) kalır', async () => {
+  const { cleanCutoutAlpha, alphaBounds } = await import('../shared/cutoutMask.js');
+  const W = 200, H = 200;
+  const rgba = new Uint8ClampedArray(W * H * 4);
+  const fill = (x0: number, y0: number, x1: number, y1: number) => {
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) rgba[(y * W + x) * 4 + 3] = 255;
+  };
+  fill(20, 60, 90, 180);   // sol ayakkabı
+  fill(110, 70, 180, 190); // sağ ayakkabı (ayrık ama büyük)
+  fill(52, 10, 55, 60);    // askı teli: gövdeye bağlı, 3 px kalınlık
+  fill(185, 5, 195, 15);   // kapı kulbu: kopuk ve küçük
+
+  cleanCutoutAlpha(rgba, W, H);
+  const alpha = (x: number, y: number) => rgba[(y * W + x) * 4 + 3];
+  assert.equal(alpha(50, 120), 255, 'sol ayakkabı kalmalı');
+  assert.equal(alpha(150, 120), 255, 'sağ ayakkabı kalmalı');
+  assert.equal(alpha(20, 60), 255, 'parça köşesi erozyonla kaybolmamalı');
+  assert.equal(alpha(53, 20), 0, 'askı teli temizlenmeli');
+  assert.equal(alpha(190, 10), 0, 'kopuk küçük nesne temizlenmeli');
+
+  const bounds = alphaBounds(rgba, W, H, 0)!;
+  assert.equal(bounds.y > 40, true, `kırpma askıyı içermemeli: ${JSON.stringify(bounds)}`);
+  assert.equal(alphaBounds(new Uint8ClampedArray(16), 2, 2), null);
+});

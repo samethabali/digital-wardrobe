@@ -163,7 +163,9 @@ export async function generateJson<T>(opts: GenerateJsonOptions): Promise<{ data
     }
   }
 
-  if (Date.now() >= deadline - 1500) {
+  // Son deneme süre aşımıyla bittiyse (toplam bütçe dolmasa da) "meşgul" değil "zamanında yanıt veremedi" denir
+  const lastTimedOut = (lastError as any)?.name === 'AbortError' || (lastError as any)?.name === 'TimeoutError' || /aborted|timeout/i.test(String((lastError as any)?.message || ''));
+  if (Date.now() >= deadline - 1500 || lastTimedOut) {
     throw new AiError('timeout', 'Yapay zeka zamanında yanıt veremedi. Lütfen biraz sonra tekrar dene.');
   }
   if (lastError instanceof AiError) throw lastError;

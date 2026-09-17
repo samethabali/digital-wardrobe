@@ -11,7 +11,7 @@ import { analyzeClothingImage, applyAnalysisToItem, createCutout, itemNeedsEnric
 import { applyEmbedding, computeItemEmbedding, findSimilarItems } from '../embeddings.js';
 import { EMBEDDING_MODEL } from '../ai/models.js';
 import {
-  invalidatesEmbedding, pickItemUpdate, pickNewOutfit, pickOutfitUpdate, withDerivedWeatherMatch,
+  changedFields, invalidatesEmbedding, pickItemUpdate, pickNewOutfit, pickOutfitUpdate, withDerivedWeatherMatch,
 } from '../itemFields.js';
 import { sanitizeContextSummary } from '../feedback.js';
 import { recordFeedback } from '../preferences.js';
@@ -275,10 +275,13 @@ export function wardrobeRoutes({ uploadMiddleware }: WardrobeRouteOptions): expr
 
   router.put('/api/wardrobe/:id', authenticateToken, async (req: any, res) => {
     try {
-      const picked = pickItemUpdate(req.body);
-      if ('error' in picked) return res.status(400).json({ error: picked.error });
       const current: any = await ItemModel.findOne({ id: req.params.id, userId: req.user.id } as any).lean();
       if (!current) return res.status(404).json({ error: 'Bulunamadı' });
+      // İstemci formun tamamını gönderir: değişmeyen alanlar (eski kayıtlardaki liste dışı değerler dahil)
+      // doğrulamaya ve embedding'i geçersiz saymaya katılmaz
+      const picked = pickItemUpdate(changedFields(req.body, current));
+      if ('error' in picked) return res.status(400).json({ error: picked.error });
+      if (Object.keys(picked.update).length === 0) return res.json({ success: true, item: toItemDTO(current) });
 
       const update = withDerivedWeatherMatch(current, picked.update);
       const operation: any = { $set: update };

@@ -60,6 +60,19 @@ export function getVapidConfig(): VapidConfig | null {
   return { publicKey, privateKey, subject: process.env.VAPID_SUBJECT?.trim() || 'mailto:destek@aura.app' };
 }
 
+export interface CutoutServiceConfig {
+  url: string;
+  token: string;
+}
+
+/** Arka plan kaldırma servisi (kendi sunucumuzda çalışan model); tanımlı değilse Gemini segmentasyonu kullanılır. */
+export function getCutoutServiceConfig(): CutoutServiceConfig | null {
+  const url = process.env.CUTOUT_SERVICE_URL?.trim().replace(/\/+$/, '');
+  const token = process.env.CUTOUT_SERVICE_TOKEN?.trim();
+  if (!url || !token || token.length < 32) return null;
+  return { url, token };
+}
+
 /** Zamanlanmış görev uç noktasını koruyan anahtar (Vercel Cron "Authorization: Bearer <CRON_SECRET>" gönderir). */
 export function getCronSecret(): string | null {
   const secret = process.env.CRON_SECRET?.trim();

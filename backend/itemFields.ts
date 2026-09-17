@@ -117,6 +117,21 @@ export function pickNewOutfit(body: any): { outfit: Record<string, unknown> } | 
   };
 }
 
+const sameValue = (a: unknown, b: unknown): boolean => {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => v === b[i]);
+  }
+  // Boş metin, null ve tanımsız "belirtilmedi" anlamında eşdeğer
+  const empty = (v: unknown) => v === undefined || v === null || v === '';
+  return empty(a) && empty(b) ? true : a === b;
+};
+
+/** Gövdeden yalnızca kayıttaki değerden farklı olan alanları bırakır. */
+export function changedFields(body: any, current: Record<string, unknown>): Record<string, unknown> {
+  if (!body || typeof body !== 'object') return {};
+  return Object.fromEntries(Object.entries(body).filter(([key, value]) => !sameValue(value, current[key])));
+}
+
 /** Parça güncellemesi embedding'i geçersiz kılıyor mu. */
 export function invalidatesEmbedding(update: Record<string, unknown>): boolean {
   return EMBEDDING_FIELDS.some(field => field in update);

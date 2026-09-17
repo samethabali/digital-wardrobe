@@ -1,0 +1,17 @@
+# {$CUTOUT_HOST} örn. 130-110-13-57.sslip.io — Caddy Let's Encrypt sertifikasını kendisi alır ve yeniler.
+{$CUTOUT_HOST} {
+	request_body {
+		max_size 64KB
+	}
+	reverse_proxy 127.0.0.1:8080 {
+		transport http {
+			read_timeout 3m
+		}
+	}
+	log {
+		output file /var/log/caddy/cutout.log {
+			roll_size 10MiB
+			roll_keep 3
+		}
+	}
+}

@@ -3,6 +3,9 @@ import {
   CATEGORIES, CATEGORY_LABELS, STYLES, STYLE_LABELS, PATTERNS, FITS, COLOR_FAMILIES, COLOR_FAMILY_HEX,
   SEASONS, SEASON_LABELS, WARMTH_LABELS, FORMALITY_LABELS,
 } from '../constants/wardrobe';
+import {
+  CATEGORIES as SHARED_CATEGORIES, FITS as SHARED_FITS, PATTERNS as SHARED_PATTERNS, STYLES as SHARED_STYLES,
+} from '../../shared/wardrobe';
 import { Chip, cx } from './ui/primitives';
 import { Field, Input, ScaleSelector, Select } from './ui/fields';
 
@@ -29,17 +32,21 @@ export const EMPTY_ITEM_FORM: ItemFormValues = {
   pattern: '', fit: '', formality: null, warmth: null, waterResistant: null, seasons: [], price: null,
 };
 
+// Liste dışı eski değerler seçim kutusunda görünmez ama kaydedilince reddedilir; forma boş olarak alınır
+const valid = (options: readonly string[], value: unknown, fallback: string) =>
+  (typeof value === 'string' && options.includes(value) ? value : fallback);
+
 export function toItemForm(item: Partial<ItemFormValues> & Record<string, any>): ItemFormValues {
   return {
     name: item.name || '',
-    category: item.category || 'top',
+    category: valid(SHARED_CATEGORIES, item.category, 'top'),
     subCategory: item.subCategory || '',
     color: item.color || '',
-    colorFamily: item.colorFamily || '',
+    colorFamily: valid(COLOR_FAMILIES, item.colorFamily, ''),
     material: item.material || '',
-    style: item.style || 'casual',
-    pattern: item.pattern || '',
-    fit: item.fit || '',
+    style: valid(SHARED_STYLES, item.style, 'casual'),
+    pattern: valid(SHARED_PATTERNS, item.pattern, ''),
+    fit: valid(SHARED_FITS, item.fit, ''),
     formality: typeof item.formality === 'number' ? item.formality : null,
     warmth: typeof item.warmth === 'number' ? item.warmth : null,
     waterResistant: typeof item.waterResistant === 'boolean' ? item.waterResistant : null,

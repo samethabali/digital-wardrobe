@@ -6,6 +6,7 @@ import {
 } from '../shared/wardrobe.js';
 import { AiError, generateJson } from './ai/gemini.js';
 import { downloadOwnImage, getPublicIdFromUrl, uploadPng, withTransformation } from './cloudinary.js';
+import { CutoutServiceConfig, getCutoutServiceConfig } from './config.js';
 
 const { PNG } = pngjs;
 
@@ -231,8 +232,60 @@ export function composeCutout(imagePng: Buffer, maskPng: Buffer, box: number[]):
   return PNG.sync.write(out);
 }
 
+// ─── Arka plan kaldırma servisi (kendi sunucumuzdaki BiRefNet modeli) ─────────
+// Model ~7 GB bellek istediği için Vercel'de çalışamaz; servis görseli sırayla işler (~20 sn).
+// Vercel fonksiyon süresinin güvenle altında kalır; servis kuyruğu da buna göre kısa tutulur
+export const CUTOUT_SERVICE_TIMEOUT_MS = 55_000;
+
+type ServiceFetcher = (url: string, init: { method: string; headers: Record<string, string>; body: string; signal: AbortSignal }) =>
+  Promise<{ ok: boolean; status: number; arrayBuffer(): Promise<ArrayBuffer>; json(): Promise<any> }>;
+let serviceFetcher: ServiceFetcher = (url, init) => fetch(url, init);
+
+export function setCutoutServiceFetcherForTests(fake: ServiceFetcher | null) {
+  serviceFetcher = fake || ((url, init) => fetch(url, init));
+}
+
+async function cutoutViaService(item: any, service: CutoutServiceConfig): Promise<Buffer> {
+  // Model 1024 px ile çalışır; tam boy görsel indirmeye gerek yok
+  const imageUrl = withTransformation(item.imagePath, 'f_jpg,q_90,w_1024');
+  let response: Awaited<ReturnType<ServiceFetcher>>;
+  try {
+    response = await serviceFetcher(`${service.url}/cutout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${service.token}` },
+      body: JSON.stringify({ imageUrl }),
+      signal: AbortSignal.timeout(CUTOUT_SERVICE_TIMEOUT_MS),
+    });
+  } catch (err: any) {
+    console.error('[Cutout] Servise ulaşılamadı:', err?.message);
+    if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+      throw new AiError('timeout', 'Arka plan kaldırma çok uzun sürdü. Lütfen biraz sonra tekrar dene.');
+    }
+    throw new AiError('unavailable', 'Arka plan kaldırma servisi şu an yanıt vermiyor. Lütfen biraz sonra tekrar dene.');
+  }
+
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    console.error('[Cutout] Servis hatası:', response.status, detail?.error);
+    if (response.status === 503) throw new AiError('unavailable', 'Şu an başka görseller işleniyor. Lütfen bir dakika sonra tekrar dene.');
+    if (response.status === 422) throw new AiError('invalid_output', 'Fotoğrafta ayrılabilecek bir parça bulunamadı.');
+    throw new AiError('unavailable', 'Arka plan kaldırılamadı. Lütfen biraz sonra tekrar dene.');
+  }
+
+  const checked = checkCutoutPng(Buffer.from(await response.arrayBuffer()).toString('base64'));
+  if ('error' in checked) {
+    console.error('[Cutout] Servis geçersiz görsel döndürdü:', checked.error);
+    throw new AiError('invalid_output', 'Arka plan kaldırılamadı.');
+  }
+  return checked.png;
+}
+
 /** Parçanın arka planı kaldırılmış kopyasını üretip Cloudinary'ye yükler ve adresini döndürür. */
 export async function createCutout(item: any, userId: string): Promise<string> {
+  const service = getCutoutServiceConfig();
+  if (service) return uploadCutout(await cutoutViaService(item, service), item, userId);
+
+  // Servis yapılandırılmamışsa (yerel geliştirme) Gemini segmentasyonu kullanılır
   const source = await downloadOwnImage(withTransformation(item.imagePath, 'f_png,w_768'));
   if (!source) throw new AiError('bad_request', 'Parça görseli indirilemedi.');
 
@@ -258,11 +311,43 @@ export async function createCutout(item: any, userId: string): Promise<string> {
   } catch {
     throw new AiError('invalid_output', 'Maske işlenemedi.');
   }
+  return uploadCutout(cutout, item, userId);
+}
 
+/** Kesilmiş PNG'yi parçanın görseliyle aynı adın "_cutout" ekli haliyle kullanıcının klasörüne yükler. */
+export function uploadCutout(png: Buffer, item: any, userId: string): Promise<string> {
   const publicId = getPublicIdFromUrl(item.imagePath);
   const baseName = publicId ? publicId.split('/').pop() : `item_${Date.now()}`;
-  return uploadPng(`data:image/png;base64,${cutout.toString('base64')}`, {
+  return uploadPng(`data:image/png;base64,${png.toString('base64')}`, {
     folder: `digital_wardrobe/${userId}`,
     public_id: `${baseName}_cutout`,
   });
+}
+
+// Servisten gelen kesilmiş görsel için üst sınır (Cloudinary ücretsiz planı görsel başına 10 MB kabul eder)
+export const MAX_CUTOUT_BYTES = 8 * 1024 * 1024;
+export const MAX_CUTOUT_SIDE = 2048;
+
+/** Kesilmiş görseli doğrular: geçerli, makul boyutlu ve şeffaf alanı olan bir PNG. */
+export function checkCutoutPng(value: unknown): { png: Buffer } | { error: string } {
+  if (typeof value !== 'string') return { error: 'Görsel eksik.' };
+  const base64 = value.replace(/^data:image\/png;base64,/, '');
+  if (base64.length > Math.ceil(MAX_CUTOUT_BYTES / 3) * 4) return { error: 'Görsel çok büyük.' };
+  const buffer = Buffer.from(base64, 'base64');
+  const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  if (buffer.length < 8 || !buffer.subarray(0, 8).equals(PNG_SIGNATURE)) return { error: 'Görsel PNG değil.' };
+
+  let image: { width: number; height: number; data: Buffer };
+  try {
+    image = PNG.sync.read(buffer);
+  } catch {
+    return { error: 'Görsel okunamadı.' };
+  }
+  if (image.width > MAX_CUTOUT_SIDE || image.height > MAX_CUTOUT_SIDE) return { error: 'Görsel boyutu çok büyük.' };
+
+  let transparent = 0;
+  const pixels = image.width * image.height;
+  for (let i = 0; i < pixels; i++) if (image.data[i * 4 + 3] < 250) transparent++;
+  if (transparent === 0 || transparent === pixels) return { error: 'Görselde kesilmiş bir parça bulunamadı.' };
+  return { png: buffer };
 }

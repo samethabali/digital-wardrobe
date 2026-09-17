@@ -42,6 +42,12 @@ function getVapidConfig() {
   if (!publicKey || !privateKey) return null;
   return { publicKey, privateKey, subject: process.env.VAPID_SUBJECT?.trim() || "mailto:destek@aura.app" };
 }
+function getCutoutServiceConfig() {
+  const url = process.env.CUTOUT_SERVICE_URL?.trim().replace(/\/+$/, "");
+  const token = process.env.CUTOUT_SERVICE_TOKEN?.trim();
+  if (!url || !token || token.length < 32) return null;
+  return { url, token };
+}
 function getCronSecret() {
   const secret = process.env.CRON_SECRET?.trim();
   return secret && secret.length >= 16 ? secret : null;
@@ -537,7 +543,8 @@ async function generateJson(opts) {
       }
     }
   }
-  if (Date.now() >= deadline - 1500) {
+  const lastTimedOut = lastError?.name === "AbortError" || lastError?.name === "TimeoutError" || /aborted|timeout/i.test(String(lastError?.message || ""));
+  if (Date.now() >= deadline - 1500 || lastTimedOut) {
     throw new AiError("timeout", "Yapay zeka zaman\u0131nda yan\u0131t veremedi. L\xFCtfen biraz sonra tekrar dene.");
   }
   if (lastError instanceof AiError) throw lastError;
@@ -7060,7 +7067,42 @@ function composeCutout(imagePng, maskPng, box) {
   }
   return PNG.sync.write(out);
 }
+var CUTOUT_SERVICE_TIMEOUT_MS = 55e3;
+var serviceFetcher = (url, init) => fetch(url, init);
+async function cutoutViaService(item, service) {
+  const imageUrl = withTransformation(item.imagePath, "f_jpg,q_90,w_1024");
+  let response;
+  try {
+    response = await serviceFetcher(`${service.url}/cutout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${service.token}` },
+      body: JSON.stringify({ imageUrl }),
+      signal: AbortSignal.timeout(CUTOUT_SERVICE_TIMEOUT_MS)
+    });
+  } catch (err) {
+    console.error("[Cutout] Servise ula\u015F\u0131lamad\u0131:", err?.message);
+    if (err?.name === "TimeoutError" || err?.name === "AbortError") {
+      throw new AiError("timeout", "Arka plan kald\u0131rma \xE7ok uzun s\xFCrd\xFC. L\xFCtfen biraz sonra tekrar dene.");
+    }
+    throw new AiError("unavailable", "Arka plan kald\u0131rma servisi \u015Fu an yan\u0131t vermiyor. L\xFCtfen biraz sonra tekrar dene.");
+  }
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    console.error("[Cutout] Servis hatas\u0131:", response.status, detail?.error);
+    if (response.status === 503) throw new AiError("unavailable", "\u015Eu an ba\u015Fka g\xF6rseller i\u015Fleniyor. L\xFCtfen bir dakika sonra tekrar dene.");
+    if (response.status === 422) throw new AiError("invalid_output", "Foto\u011Frafta ayr\u0131labilecek bir par\xE7a bulunamad\u0131.");
+    throw new AiError("unavailable", "Arka plan kald\u0131r\u0131lamad\u0131. L\xFCtfen biraz sonra tekrar dene.");
+  }
+  const checked = checkCutoutPng(Buffer.from(await response.arrayBuffer()).toString("base64"));
+  if ("error" in checked) {
+    console.error("[Cutout] Servis ge\xE7ersiz g\xF6rsel d\xF6nd\xFCrd\xFC:", checked.error);
+    throw new AiError("invalid_output", "Arka plan kald\u0131r\u0131lamad\u0131.");
+  }
+  return checked.png;
+}
 async function createCutout(item, userId) {
+  const service = getCutoutServiceConfig();
+  if (service) return uploadCutout(await cutoutViaService(item, service), item, userId);
   const source = await downloadOwnImage(withTransformation(item.imagePath, "f_png,w_768"));
   if (!source) throw new AiError("bad_request", "Par\xE7a g\xF6rseli indirilemedi.");
   const { data } = await generateJson({
@@ -7083,12 +7125,37 @@ async function createCutout(item, userId) {
   } catch {
     throw new AiError("invalid_output", "Maske i\u015Flenemedi.");
   }
+  return uploadCutout(cutout, item, userId);
+}
+function uploadCutout(png, item, userId) {
   const publicId = getPublicIdFromUrl(item.imagePath);
   const baseName = publicId ? publicId.split("/").pop() : `item_${Date.now()}`;
-  return uploadPng(`data:image/png;base64,${cutout.toString("base64")}`, {
+  return uploadPng(`data:image/png;base64,${png.toString("base64")}`, {
     folder: `digital_wardrobe/${userId}`,
     public_id: `${baseName}_cutout`
   });
+}
+var MAX_CUTOUT_BYTES = 8 * 1024 * 1024;
+var MAX_CUTOUT_SIDE = 2048;
+function checkCutoutPng(value) {
+  if (typeof value !== "string") return { error: "G\xF6rsel eksik." };
+  const base64 = value.replace(/^data:image\/png;base64,/, "");
+  if (base64.length > Math.ceil(MAX_CUTOUT_BYTES / 3) * 4) return { error: "G\xF6rsel \xE7ok b\xFCy\xFCk." };
+  const buffer = Buffer.from(base64, "base64");
+  const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  if (buffer.length < 8 || !buffer.subarray(0, 8).equals(PNG_SIGNATURE)) return { error: "G\xF6rsel PNG de\u011Fil." };
+  let image;
+  try {
+    image = PNG.sync.read(buffer);
+  } catch {
+    return { error: "G\xF6rsel okunamad\u0131." };
+  }
+  if (image.width > MAX_CUTOUT_SIDE || image.height > MAX_CUTOUT_SIDE) return { error: "G\xF6rsel boyutu \xE7ok b\xFCy\xFCk." };
+  let transparent = 0;
+  const pixels = image.width * image.height;
+  for (let i = 0; i < pixels; i++) if (image.data[i * 4 + 3] < 250) transparent++;
+  if (transparent === 0 || transparent === pixels) return { error: "G\xF6rselde kesilmi\u015F bir par\xE7a bulunamad\u0131." };
+  return { png: buffer };
 }
 
 // backend/embeddings.ts
@@ -7273,6 +7340,17 @@ function pickNewOutfit(body) {
       source
     }
   };
+}
+var sameValue = (a, b) => {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => v === b[i]);
+  }
+  const empty = (v) => v === void 0 || v === null || v === "";
+  return empty(a) && empty(b) ? true : a === b;
+};
+function changedFields(body, current) {
+  if (!body || typeof body !== "object") return {};
+  return Object.fromEntries(Object.entries(body).filter(([key, value]) => !sameValue(value, current[key])));
 }
 function invalidatesEmbedding(update) {
   return EMBEDDING_FIELDS.some((field) => field in update);
@@ -7746,10 +7824,11 @@ function wardrobeRoutes({ uploadMiddleware }) {
   });
   router.put("/api/wardrobe/:id", authenticateToken, async (req, res) => {
     try {
-      const picked = pickItemUpdate(req.body);
-      if ("error" in picked) return res.status(400).json({ error: picked.error });
       const current = await ItemModel.findOne({ id: req.params.id, userId: req.user.id }).lean();
       if (!current) return res.status(404).json({ error: "Bulunamad\u0131" });
+      const picked = pickItemUpdate(changedFields(req.body, current));
+      if ("error" in picked) return res.status(400).json({ error: picked.error });
+      if (Object.keys(picked.update).length === 0) return res.json({ success: true, item: toItemDTO(current) });
       const update = withDerivedWeatherMatch(current, picked.update);
       const operation = { $set: update };
       if (invalidatesEmbedding(update)) operation.$unset = { embedding: "", embeddingModel: "" };
@@ -8514,6 +8593,28 @@ function createApp(options = {}) {
 }
 
 // backend/migration.ts
+var LEGACY_PATTERNS = { ta\u015Flamal\u0131: "d\xFCz", y\u0131rt\u0131k: "d\xFCz", fitilli: "d\xFCz", "d\xFCz renk": "d\xFCz", ekose: "kareli", puantiyeli: "noktal\u0131" };
+var LEGACY_FITS = { d\u00FCz: "normal", regular: "normal", slim: "dar", "slim fit": "dar", loose: "bol" };
+async function normalizeLegacyItemValues() {
+  const items = await ItemModel.find({
+    $or: [
+      { category: { $nin: [...CATEGORIES] } },
+      { pattern: { $nin: [...PATTERNS, "", null] } },
+      { fit: { $nin: [...FITS, "", null] } }
+    ]
+  }).select("id category subCategory pattern fit").lean();
+  let changed = 0;
+  for (const item of items) {
+    const set = {};
+    if (!CATEGORIES.includes(item.category)) set.category = inferCategory(void 0, `${item.category || ""} ${item.subCategory || ""}`);
+    if (item.pattern && !PATTERNS.includes(item.pattern)) set.pattern = LEGACY_PATTERNS[item.pattern.toLocaleLowerCase("tr-TR")] || UNKNOWN;
+    if (item.fit && !FITS.includes(item.fit)) set.fit = LEGACY_FITS[item.fit.toLocaleLowerCase("tr-TR")] || UNKNOWN;
+    if (Object.keys(set).length === 0) continue;
+    await ItemModel.updateOne({ id: item.id }, { $set: set });
+    changed++;
+  }
+  return changed;
+}
 var LEGACY_OWNER_EMAIL = "samet@aura.com";
 async function runMigration() {
   try {
@@ -8527,6 +8628,8 @@ async function runMigration() {
     }
     const privacy = await UserModel.updateMany({ isPrivate: { $exists: false } }, { $set: { isPrivate: false } });
     if (privacy.modifiedCount > 0) console.log(`[Migration] ${privacy.modifiedCount} kullan\u0131c\u0131n\u0131n gizlilik ayar\u0131 varsay\u0131lan (false) yap\u0131ld\u0131.`);
+    const legacy = await normalizeLegacyItemValues();
+    if (legacy > 0) console.log(`[Migration] ${legacy} par\xE7adaki liste d\u0131\u015F\u0131 kategori/desen/kesim de\u011Feri d\xFCzeltildi.`);
     const [itemsWithoutUser, outfitsWithoutUser] = await Promise.all([
       ItemModel.countDocuments({ userId: { $exists: false } }),
       OutfitModel.countDocuments({ userId: { $exists: false } })

@@ -1,0 +1,15 @@
+{
+  "name": "aura-cutout-service",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Aura arka plan kaldırma servisi (BiRefNet lite, CPU)",
+  "scripts": {
+    "build": "esbuild src/server.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server.mjs",
+    "start": "node dist/server.mjs"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "4.3.0",
+    "pngjs": "^7.0.0"
+  }
+}
